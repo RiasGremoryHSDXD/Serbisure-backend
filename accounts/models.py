@@ -8,6 +8,9 @@ class tbl_user_profile(AbstractUser):
 
     # Define our ENUM choices up here 
 
+    USERNAME_FIELD = 'email'
+    REQUIRED_FIELDS = ['username']
+
     ACCOUNT_TYPE_CHOICES = (
         ('Kasambahay', 'Kasambahay'),
         ('Homeowner', 'Homeowner'),

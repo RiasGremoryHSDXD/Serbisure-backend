@@ -2,6 +2,8 @@ from rest_framework import serializers
 from .models import tbl_user_profile
 from datetime import date
 from core.utils import convert_title, check_input_letters
+from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
+from rest_framework.exceptions import AuthenticationFailed, ValidationError
 
 class UserRegistrationSerializer(serializers.ModelSerializer):
     # This enrsure the password is required to create an account,
@@ -113,3 +115,9 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
     
     def validate_email(self, value):
         return value.lower()
+
+class CustomLoginSerializer(TokenObtainPairSerializer):
+    default_error_messages = {
+        "no_active_account": "Wrong email or password. Please try again!"
+    }
+    

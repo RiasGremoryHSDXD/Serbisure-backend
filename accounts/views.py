@@ -1,9 +1,19 @@
 from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from .serializers import UserRegistrationSerializer
+from .serializers import UserRegistrationSerializer, CustomLoginSerializer
+from rest_framework_simplejwt.views import TokenObtainPairView
+from rest_framework.throttling import AnonRateThrottle
+from rest_framework.exceptions import Throttled
+from django.core.cache import cache
+import math
+
+class RegistrationThrottle(AnonRateThrottle):
+    rate = '100/d'
 
 class UserRegistrationView(APIView):
+
+    throttle_classes = [RegistrationThrottle]
 
     # This tell Django: "You do not need to logged in to access this windows."
     # (Because if you had to be logged in to register...nobody could ever register!)
@@ -12,6 +22,19 @@ class UserRegistrationView(APIView):
     permission_classes = []
 
     def post(self, request):
+
+        # Look for the special header send by the frontend (or Postman)
+        idempotency_key = request.headers.get('Idempotency-Key')
+
+        # If they sent a key, check if we already saved an answer for it
+        if idempotency_key:
+            cached_response = cache.get(idempotency_key)
+
+            if cached_response:
+                # They Double Clicked! Give them the cached answer
+                return Response(cached_response['data'], status=cached_response['status'])
+
+
         # 1. Give the incoming JSON data to our bouncer (the Serializer)
         
         serializer = UserRegistrationSerializer(data=request.data)
@@ -24,16 +47,85 @@ class UserRegistrationView(APIView):
 
             serializer.save()
 
+            response_data = {"message": "Account created successfully"}
+            response_status = status.HTTP_201_CREATED
+            
+            # Trap the double-click: Save the answer in the cache for 24 hours
+            if idempotency_key:
+                cache.set(
+                    idempotency_key, 
+                    {'data': response_data, 'status': response_status},
+                    timeout=86400 # 86400 seconds = 24 hours
+                )
+
             return Response(
-                {
-                    "message": "Account created successfully!"
-                },
-                status=status.HTTP_201_CREATED
+                response_data,
+                status=response_status
             )
-        
-        # 5. If invalid (e.g., missing an email), send the exact error back
+            
+        # If invalid (e.g., missing an email), send the exact error back
 
         return Response(
             serializer.errors,
             status=status.HTTP_400_BAD_REQUEST
-        ) 
+        )
+    
+    def throttled(self, request, wait):        
+        # 3600 seconds = 1 hour
+        if wait > 3600: 
+            time_left = math.ceil(wait / 3600)
+            custom_message = f"Too many attempts. Please try again in {time_left} hours."
+
+        else:
+            custom_message = f"Too many attempts. Please try again in {math.ceil(wait/60)} minutes."
+
+        raise Throttled(detail=custom_message)
+
+
+class LoginThrottle(AnonRateThrottle):
+    """
+    Implements a Sliding Window rate limit for login attempts.
+    This throttle prevents brute-force attacks by limiting the number of 
+    failed login attempts an anonymous user can make. It uses a sliding 
+    window algorithm rather than a fixed clock, meaning the restriction 
+    only lifts when the oldest failed attempt falls out of the time window.
+    Attributes:
+        rate (str): Set to 'custom' to bypass DRF's default s/m/h/d parser.
+    """
+    
+    rate = 'custom'
+    
+    def parse_rate(self, rate):
+        """
+        Overrides the default string parser to enforce exact math.
+        
+        Returns:
+            tuple: (number_of_attempts, cooldown_in_seconds)
+                   Currently set to 5 attempts per 300 seconds (5 minutes).
+        """
+        return (5, 300)
+
+class CustomLoginView(TokenObtainPairView):
+    """
+    Secure login endpoint utilizing JWT authentication and brute-force protection.
+    Inherits from SimpleJWT's TokenObtainPairView to generate Access and 
+    Refresh tokens. It applies a custom serializer to format error messages 
+    and a rate throttle to lock out abusive traffic.
+    Attributes:
+        serializer_class (Serializer): Custom serializer for user-friendly 401 errors.
+        throttle_classes (list): Applies the LoginThrottle sliding window limit.
+    """
+    serializer_class = CustomLoginSerializer
+    throttle_classes = [LoginThrottle]
+    def throttled(self, request, wait):
+        """
+        Intercepts the default throttle exception to provide a custom UI message.
+        Args:
+            request (Request): The incoming HTTP request.
+            wait (int): The number of seconds remaining before the throttle lifts.
+        Raises:
+            Throttled: Returns a 429 Too Many Requests with a user-friendly 
+                       wait time rounded up to the nearest minute.
+        """
+        custom_message = f"Too many attempts. Please try again in {math.ceil(wait/60)} minutes."
+        raise Throttled(detail=custom_message)

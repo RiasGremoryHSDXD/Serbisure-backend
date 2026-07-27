@@ -10,3 +10,7 @@ neon_guide.md
 
 __pycache__/
 *.pyc
+
+# Pytest Coverage
+.coverage
+.pytest_cache/
