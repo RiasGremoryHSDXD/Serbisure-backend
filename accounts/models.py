@@ -9,7 +9,7 @@ class tbl_user_profile(AbstractUser):
     # Define our ENUM choices up here 
 
     USERNAME_FIELD = 'email'
-    REQUIRED_FIELDS = ['username']
+    REQUIRED_FIELDS = ['username', 'first_name', 'middle_name', 'last_name']
 
     ACCOUNT_TYPE_CHOICES = (
         ('Kasambahay', 'Kasambahay'),
@@ -41,13 +41,75 @@ class tbl_user_profile(AbstractUser):
         default=uuid.uuid4,
         editable=False
     )
-    middle_name = models.CharField(max_length=100, blank=True, null=True)
-    date_of_birth = models.DateField(blank=True, null=True)
-    religion = models.CharField(max_length=100, blank=True, null=True)
-    nationality = models.CharField(max_length=100, blank=True, null=True)
-    street = models.CharField(max_length=100, blank=True, null=True)
-    city = models.CharField(max_length=100, blank=True, null=True)
-    province = models.CharField(max_length=100, blank=True, null=True)
+
+    email = models.EmailField(
+        unique=True
+    )
+
+
+
+    first_name = models.CharField(
+        max_length=100, 
+        blank=False, 
+        null=False
+    )
+
+
+    middle_name = models.CharField(
+        max_length=100, 
+        blank=True, 
+        null=True
+    )
+
+    last_name = models.CharField(
+        max_length=100,
+        blank=False,
+        null=False
+    )
+
+    is_active = models.BooleanField(
+        default=True,
+    )
+
+    is_staff = models.BooleanField(
+        default=False,
+        help_text="Designates weather the user c an log into admin"
+    )
+
+    date_of_birth = models.DateField(
+        blank=True, 
+        null=True
+    )
+
+    religion = models.CharField(
+        max_length=100, 
+        blank=True, 
+        null=True
+    )
+
+    nationality = models.CharField(
+        max_length=100, 
+        blank=True, 
+        null=True
+    )
+    
+    street = models.CharField(
+        max_length=100, 
+        blank=True, 
+        null=True
+    )
+
+    city = models.CharField(
+        max_length=100, 
+        blank=True, 
+        null=True
+    )
+
+    province = models.CharField(
+        max_length=100, 
+        blank=True, 
+        null=True
+    )
     
     zipcode = models.CharField(
         max_length=4, 
@@ -61,15 +123,18 @@ class tbl_user_profile(AbstractUser):
         ]
     )
 
-    country = models.CharField(max_length=100, blank=True, null=True)
+    country = models.CharField(
+        max_length=100, 
+        blank=True, 
+        null=True
+    )
+
     gender = models.CharField(
         max_length=20, 
         choices=GENDER_CHOICES,
         blank=True, 
         null=True
     )
-
-    email = models.EmailField(unique=True)
 
     contact_number = models.CharField(
         max_length=15,
@@ -83,8 +148,11 @@ class tbl_user_profile(AbstractUser):
         ]
     )
 
-
-    language = models.CharField(max_length=100, blank=True, null=True)
+    language = models.CharField(
+        max_length=100, 
+        blank=True, 
+        null=True
+    )
 
     # Custome ENUM fields using the choices we defined above
 
