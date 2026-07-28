@@ -6,6 +6,7 @@ from rest_framework_simplejwt.views import TokenObtainPairView
 from rest_framework.throttling import AnonRateThrottle
 from rest_framework.exceptions import Throttled
 from django.core.cache import cache
+from core.utils import check_valid_uuid
 import math
 
 class RegistrationThrottle(AnonRateThrottle):
@@ -27,12 +28,16 @@ class UserRegistrationView(APIView):
         idempotency_key = request.headers.get('Idempotency-Key')
 
         # If they sent a key, check if we already saved an answer for it
-        if idempotency_key:
-            cached_response = cache.get(idempotency_key)
+        if not idempotency_key or not check_valid_uuid(idempotency_key):
 
-            if cached_response:
-                # They Double Clicked! Give them the cached answer
-                return Response(cached_response['data'], status=cached_response['status'])
+            return Response({"details": "The Idempotency-Key header is required and must be a valid UUID v4."}, 
+                status=status.HTTP_400_BAD_REQUEST)
+        
+        cached_response = cache.get(idempotency_key)
+
+        if cached_response:
+            # They Double Clicked! Give them the cached answer
+            return Response(cached_response['data'], status=cached_response['status'])
 
 
         # 1. Give the incoming JSON data to our bouncer (the Serializer)

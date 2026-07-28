@@ -1,3 +1,5 @@
+import uuid
+
 def convert_title(text):
     """
     Cleans and standardizes messy text by removing extra spaces and applying Title Case.
@@ -34,3 +36,14 @@ def check_input_letters(text, text_minimum=3, text_maximum=50):
         return False
 
     return True
+
+def check_valid_uuid(id):
+    """
+    Checks if a string is a perfectly formatted UUID v4.
+    Returns True if valid, False if invalid (e.g. "123" or "apple").
+    """
+    try:
+        uuid.UUID(str(id), version=4)
+        return True
+    except ValueError:
+        return False

@@ -1,5 +1,5 @@
 from django.test import SimpleTestCase
-from .utils import check_input_letters, convert_title
+from .utils import check_input_letters, convert_title, check_valid_uuid
 
 class UtilsTest(SimpleTestCase):
 
@@ -61,4 +61,12 @@ class UtilsTest(SimpleTestCase):
     
     def test_check_input_letters_sql_injection_attemts(self):
         result = check_input_letters("DROP TABLE user;")
+        self.assertFalse(result)
+
+    def test_valid_uuid(self):
+        result = check_valid_uuid("f47ac10b-58cc-4372-a567-0e02b2c3d472")
+        self.assertTrue(result)
+
+    def test_invalid_uuid(self):
+        result = check_valid_uuid("123")
         self.assertFalse(result)
