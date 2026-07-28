@@ -4,6 +4,7 @@ from datetime import date
 from core.utils import convert_title, check_input_letters
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from rest_framework.exceptions import AuthenticationFailed, ValidationError
+import uuid
 
 class UserRegistrationSerializer(serializers.ModelSerializer):
     # This enrsure the password is required to create an account,
@@ -43,21 +44,25 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
         # 1. Take the password out of the data so we can securely hash it
         password = validated_data.pop('password')
 
-        # 2. AbstractUser REQUIRES a username. Since we don't have one,
-        # let's just use thier email as thier username behind the scene
-        email = validated_data.get('email')
+        first_name = validated_data.get('first_name', '')
+        middle_name = validated_data.get('middle_name', '')
+        last_name = validated_data.get('last_name', '')
 
-        # 3. Create the user. The **validated_data automatically passes all
-        # field (first_name, religion, city, etc) to the database
+        combined = f"{first_name}{middle_name}{last_name}".replace(" ", "").lower()
+        random_suffix = str(uuid.uuid4())[:5]
 
-        user = tbl_user_profile.objects.create_user(
-            username=email,
-            password=password,
-            **validated_data
-        )
+        validated_data['username'] = f"{combined}_{random_suffix}"
+
+        user = tbl_user_profile(**validated_data)
+        user.set_password(password)
+        user.save()
 
         return user
     
+    # Mandatory Value in creating a account
+    # def mandatory_field_account_creation(self, value):
+
+
     # Custom Validation: Check if they are 18+
     def validate_date_of_birth(self, value):
         
@@ -90,7 +95,7 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
         if not any(char.isalpha() for char in value):
             raise serializers.ValidationError("Password must contain at least one letter")
         
-        return value 
+        return value         
 
     def validate_first_name(self, text):
         
@@ -112,9 +117,15 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("Last name must be 3-50 characters long and contain only letters and spaces.")
         
         return convert_title(text)
+
+    def validate_account_type(self, value):
+        if value == "Admin":
+            raise serializers.ValidationError("You cannot create an Admin account through this public endpoints")
+        return value
     
     def validate_email(self, value):
         return value.lower()
+    
 
 class CustomLoginSerializer(TokenObtainPairSerializer):
     default_error_messages = {
