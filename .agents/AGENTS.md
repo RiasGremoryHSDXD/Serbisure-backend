@@ -43,6 +43,62 @@
 - Normalize API responses (consistent success/error payload structures).
 - Do not leak internal model structures or raw traceback responses to the frontend.
 
+## Security Rules (API-Security-Checklist)
+*Reference: [API Security Checklist](https://github.com/shieldfy/API-Security-Checklist) - Refer to this link for the comprehensive guide.*
+
+### Authentication
+- Don't use Basic Auth. Use standard authentication instead.
+- Don't reinvent the wheel in Authentication, token generation, password storage. Use the standards.
+- Use Max Retry and jail features in Login.
+- Use encryption on all sensitive data.
+
+### Access
+- Limit requests (Throttling) to avoid DDoS / brute-force attacks.
+- Use HTTPS on server side with TLS 1.2+ and secure ciphers to avoid MITM (Man in the Middle Attack) and ensure Host header matches the SNI.
+- Use HSTS header with SSL to avoid SSL Strip attacks.
+- Turn off directory listings.
+- For private APIs, allow access only from safelisted IPs/hosts.
+
+### Authorization
+- OAuth: Always validate redirect_uri server-side to allow only safelisted URLs.
+- Always try to exchange for code and not tokens (don't allow response_type=token).
+- Use state parameter with a random hash to prevent CSRF on the OAuth authorization process.
+- Define the default scope, and validate scope parameters for each application.
+
+### Input
+- Use the proper HTTP method according to the operation.
+- Validate content-type on request Accept header (Content Negotiation).
+- Validate content-type of posted data.
+- Validate user input to avoid common vulnerabilities (e.g., XSS, SQL-Injection, Remote Code Execution, etc.).
+- Don't use any sensitive data (credentials, Passwords, security tokens, or API keys) in the URL, but use standard Authorization header.
+- Use only server-side encryption.
+- Use an API Gateway service to enable caching and Rate Limit policies.
+
+### Processing
+- Check if all the endpoints are protected behind authentication.
+- User own resource ID should be avoided. Use /me/orders instead of /user/654321/orders.
+- Don't auto-increment IDs. Use UUID instead.
+- If parsing XML/YAML, disable entity expansion to avoid XXE/Billion Laughs attacks.
+- Use a CDN for file uploads.
+- Use Workers and Queues for huge amounts of data to avoid HTTP Blocking.
+- Do not forget to turn the DEBUG mode OFF.
+- Use non-executable stacks when available.
+
+### Output
+- Send X-Content-Type-Options, X-Frame-Options, and Content-Security-Policy headers.
+- Remove fingerprinting headers (X-Powered-By, Server, etc.).
+- Force content-type for your response.
+- Do not return overly specific error messages to the client that could reveal implementation details.
+- Don't return sensitive data like credentials, passwords, or security tokens.
+- Return the proper status code according to the operation completed.
+
+### CI & CD / Monitoring / Advanced
+- Audit your design with unit/integration tests coverage.
+- Continuously run security tests and check dependencies for vulnerabilities.
+- Ensure you aren't logging any sensitive data like credit cards, passwords, PINs, etc.
+- Rate Limiting: Implement sliding window rate limiting.
+- Secrets Management: Never commit secrets to version control - use environment variables or secret managers.
+
 ## Performance Rules
 - Avoid unnecessary database hits in loops.
 - Use query optimization where it actually improves performance.
