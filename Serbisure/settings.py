@@ -12,6 +12,9 @@ https://docs.djangoproject.com/en/6.0/ref/settings/
 
 from pathlib import Path
 import os 
+import cloudinary
+import cloudinary.uploader
+import cloudinary.api
 import dj_database_url
 from dotenv import load_dotenv
 from datetime import timedelta
@@ -46,6 +49,7 @@ INSTALLED_APPS = [
     'testing_database',
     'accounts',
     'core',
+    'verifications',
     'rest_framework_simplejwt'
 ]
 
@@ -144,3 +148,11 @@ SIMPLE_JWT = {
     'ROTATE_REFRESH_TOKENS': True, # Gives a new refresh token every time it is used
     'BLACKLIST_AFTER_ROTATION': True, # Destroys the old token after it is used
 }
+
+# Cloudinary Configuration
+cloudinary.config(
+    cloud_name = os.environ.get('CLOUDINARY_CLOUD_NAME'),
+    api_key = os.environ.get('CLOUDINARY_API_KEY'),
+    api_secret = os.environ.get('CLOUDINARY_API_SECRET'),
+    secure = True
+)
