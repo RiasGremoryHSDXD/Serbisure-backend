@@ -14,7 +14,7 @@ class DocumentUploadSerializer(serializers.ModelSerializer):
 
         model = tbl_documents
         fields = ['document_type', 'date_issued', 'valid_until', 'document_image', 'document_url']
-        read_only_fields = ['document_url']
+        read_only_fields = ['document_url', 'verification_status', 'verifyBy']
 
 
     def create(self, validated_data):
