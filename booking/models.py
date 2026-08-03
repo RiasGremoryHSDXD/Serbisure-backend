@@ -99,3 +99,26 @@ class tbl_booking(models.Model):
                 name='valid_booking_status_enum'
             )
         ]
+
+class tbl_booking_assignment(models.Model):
+    booking_assignment_id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    
+    booking_id = models.ForeignKey(
+        'tbl_booking', # Links to the model right above it
+        on_delete=models.CASCADE,
+        related_name='assignments',
+        db_column='booking_id'
+    )
+    
+    accepter_id = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='accepted_bookings',
+        limit_choices_to={'account_type': 'Kasambahay'}, # Only Kasambahay can accept!
+        db_column='accepter_id'
+    )
+    
+    accepted_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'tbl_booking_assignment'
