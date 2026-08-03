@@ -50,6 +50,7 @@ INSTALLED_APPS = [
     'accounts',
     'core',
     'verifications',
+    'booking',
     'rest_framework_simplejwt'
 ]
 
