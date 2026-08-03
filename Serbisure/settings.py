@@ -51,7 +51,10 @@ INSTALLED_APPS = [
     'core',
     'verifications',
     'booking',
-    'rest_framework_simplejwt'
+    'rest_framework_simplejwt',
+    'reviews',
+    'notifications',
+    'chat',
 ]
 
 MIDDLEWARE = [
