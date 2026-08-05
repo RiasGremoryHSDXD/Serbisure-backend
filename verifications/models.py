@@ -57,13 +57,13 @@ class tbl_documents(models.Model):
     )
 
     date_issued = models.DateField(
-        blank=False,
-        null=False
+        blank=True,
+        null=True
     )
 
     valid_until = models.DateField(
-        blank=False,
-        null=False
+        blank=True,
+        null=True
     )
 
     verification_status = models.CharField(
@@ -77,6 +77,8 @@ class tbl_documents(models.Model):
     )
 
     class Meta:
+
+        db_table = 'tbl_documents'
         constraints = [
 
             CheckConstraint(
