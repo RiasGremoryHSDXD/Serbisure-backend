@@ -1,5 +1,6 @@
 from django.contrib import admin 
 from django.urls import path, include
+from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView
 
 """
 URL configuration for Serbisure project.
@@ -25,5 +26,11 @@ urlpatterns = [
     path('api/', include('testing_database.urls')),
     path('api/v1/accounts/', include('accounts.urls')),
     path('api/v1/verifications/', include('verifications.urls')),
-    path('api/v1/booking/', include('booking.urls'))
+    path('api/v1/booking/', include('booking.urls')),
+
+    # 1. This generates the raw JSON file of your API structure
+    path('api/schema/', SpectacularAPIView.as_view(), name='schema'),
+
+    # 2. This creates the beautiful Swagger UI Webpage using that JSON!
+    path('api/docs/', SpectacularSwaggerView.as_view(url_name='schema'), name='swagger-ui')
 ]

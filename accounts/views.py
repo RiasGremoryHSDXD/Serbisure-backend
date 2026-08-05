@@ -8,6 +8,8 @@ from rest_framework.exceptions import Throttled
 from django.core.cache import cache
 from core.utils import check_valid_uuid
 import math
+from drf_spectacular.utils import extend_schema, OpenApiParameter
+from drf_spectacular.types import OpenApiTypes
 
 class RegistrationThrottle(AnonRateThrottle):
     rate = '5/d'
@@ -22,6 +24,18 @@ class UserRegistrationView(APIView):
     authentication_classes = []
     permission_classes = []
 
+    @extend_schema(
+        request=UserRegistrationSerializer,
+        parameters=[
+            OpenApiParameter(
+                name='Idempotency-Key',
+                type=OpenApiTypes.UUID,
+                location=OpenApiParameter.HEADER,
+                description='A unique UUID v4 string to prevent duplicate registrations',
+                required=True,
+            )
+        ]
+    )
     def post(self, request):
 
         # Look for the special header send by the frontend (or Postman)

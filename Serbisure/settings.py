@@ -39,23 +39,30 @@ ALLOWED_HOSTS = ['*'] # Allow Vercel domains
 # Application definition
 
 INSTALLED_APPS = [
+    # 1. DJANGO CORE APPS
     'django.contrib.admin',
     'django.contrib.auth',
     'django.contrib.contenttypes',
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+    
+    # 2. THIRD PARTY APPS
     'rest_framework',
+    'rest_framework_simplejwt',
+    'drf_spectacular',
+    
+    # 3. YOUR CUSTOM APPS
     'testing_database',
     'accounts',
     'core',
     'verifications',
     'booking',
-    'rest_framework_simplejwt',
     'reviews',
     'notifications',
     'chat',
 ]
+
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
@@ -144,7 +151,8 @@ AUTH_USER_MODEL = 'accounts.tbl_user_profile'
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES' : (
         'rest_framework_simplejwt.authentication.JWTAuthentication',
-    )
+    ),
+    'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
 }
 
 # JWT Token Rules
@@ -162,3 +170,11 @@ cloudinary.config(
     api_secret = os.environ.get('CLOUDINARY_API_SECRET'),
     secure = True
 )
+
+# Spectacular API Documentation Settings
+SPECTACULAR_SETTINGS = {
+    'TITLE': 'Serbisure API',
+    'DESCRPTION': 'Official Documentation for the Serbisure Backend',
+    'VERSION': '1.0.0',
+    'SERVE_INCLUDE_SCHEMA': False,
+}
