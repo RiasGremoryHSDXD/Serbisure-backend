@@ -139,7 +139,7 @@ class CustomLoginSerializer(TokenObtainPairSerializer):
 
         # self.user is populated if the email/password were correct
         # We block 'Admin' and 'Barangay' accounts from logging into the mobile app
-        if self.user.account_type in ['Admin', 'Barangay']:
+        if self.user.account_type in ['Admin', 'Barangay'] or self.user.is_superuser or self.user.is_staff:
             # We return the exact same generic error so attackers don't know it's an admin account
             raise AuthenticationFailed("Wrong email or password. Please try again!")
 
