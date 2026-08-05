@@ -114,7 +114,7 @@ class tbl_booking_assignment(models.Model):
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
         related_name='accepted_bookings',
-        limit_choices_to={'account_type': 'Kasambahay'}, # Only Kasambahay can accept!
+        limit_choices_to={'account_type__in': ['Homeowner', 'Kasambahay']},
         db_column='accepter_id'
     )
     
