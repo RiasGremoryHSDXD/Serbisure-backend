@@ -10,7 +10,7 @@ from core.utils import check_valid_uuid
 import math
 
 class RegistrationThrottle(AnonRateThrottle):
-    rate = '100/d'
+    rate = '5/d'
 
 class UserRegistrationView(APIView):
 

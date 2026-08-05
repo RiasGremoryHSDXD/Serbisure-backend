@@ -132,3 +132,15 @@ class CustomLoginSerializer(TokenObtainPairSerializer):
         "no_active_account": "Wrong email or password. Please try again!"
     }
     
+    
+    def validate(self, attrs):
+        # This will verify the email and password first
+        data = super().validate(attrs)
+
+        # self.user is populated if the email/password were correct
+        # We block 'Admin' and 'Barangay' accounts from logging into the mobile app
+        if self.user.account_type in ['Admin', 'Barangay']:
+            # We return the exact same generic error so attackers don't know it's an admin account
+            raise AuthenticationFailed("Wrong email or password. Please try again!")
+
+        return data
