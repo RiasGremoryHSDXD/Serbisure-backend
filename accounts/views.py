@@ -64,9 +64,16 @@ class UserRegistrationView(APIView):
 
             # 3. If valid, encrpyt the password and save to the database
 
-            serializer.save()
+            user = serializer.save()
 
-            response_data = {"message": "Account created successfully"}
+            from rest_framework_simplejwt.tokens import RefreshToken
+            refresh = RefreshToken.for_user(user)
+
+            response_data = {
+                "message": "Account created successfully",
+                "access": str(refresh.access_token),
+                "refresh": str(refresh)
+            }
             response_status = status.HTTP_201_CREATED
             
             # Trap the double-click: Save the answer in the cache for 24 hours
@@ -148,3 +155,17 @@ class CustomLoginView(TokenObtainPairView):
         """
         custom_message = f"Too many attempts. Please try again in {math.ceil(wait/60)} minutes."
         raise Throttled(detail=custom_message)
+
+from rest_framework import generics
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.parsers import MultiPartParser, FormParser
+from .serializers import ProfileImageUploadSerializer
+
+class ProfileImageUploadView(generics.UpdateAPIView):
+    permission_classes = [IsAuthenticated]
+    parser_classes = (MultiPartParser, FormParser)
+    serializer_class = ProfileImageUploadSerializer
+
+    def get_object(self):
+        # We automatically return the logged-in user!
+        return self.request.user
