@@ -176,6 +176,12 @@ class tbl_user_profile(AbstractUser):
         null=True
     )
 
+    profile_link = models.CharField(
+        max_length=255,
+        blank=True,
+        null=True
+    )
+
     # Custome ENUM fields using the choices we defined above
 
     account_type = models.CharField(
