@@ -30,10 +30,10 @@ This document outlines the database schema, models, field types, and choices (en
 | `zipcode` | `CharField` | Null=True, Blank=True |
 | `country` | `CharField` | Null=True, Blank=True |
 | `gender` | `CharField` | Null=True, Blank=True, Choices: ['Male', 'Female', 'Other'] |
-| `contact_number` | `CharField` | Null=True, Blank=True |
 | `language` | `CharField` | Null=True, Blank=True |
 | `account_type` | `CharField` | Choices: ['Kasambahay', 'Homeowner', 'Barangay', 'Admin'] |
 | `verification_status` | `CharField` | Choices: ['Unverified', 'Pending', 'Verified', 'Rejected'] |
+| `contact_number` | `CharField` | - |
 
 ## Verifications App
 
