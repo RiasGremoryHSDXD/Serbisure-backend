@@ -156,3 +156,52 @@ class CustomLoginSerializer(TokenObtainPairSerializer):
             raise AuthenticationFailed("Wrong email or password. Please try again!")
 
         return data
+
+import cloudinary.uploader
+
+class ProfileImageUploadSerializer(serializers.ModelSerializer):
+    profile_image = serializers.ImageField(
+        write_only=True,
+        required=True
+    )
+
+    class Meta:
+        model = tbl_user_profile
+        fields = ['profile_link', 'profile_image']
+        read_only_fields = ['profile_link']
+
+    def update(self, instance, validated_data):
+        image_file = validated_data.pop('profile_image')
+        
+        upload_result = cloudinary.uploader.upload(
+            image_file,
+            folder="serbisure_profiles/",
+            type="authenticated"
+        )
+
+        public_id = upload_result.get('public_id')
+        instance.profile_link = public_id
+        instance.save()
+        
+        return instance
+
+    def to_representation(self, instance):
+        import cloudinary.utils
+        representation = super().to_representation(instance)
+        public_id = instance.profile_link
+
+        if public_id:
+            temporary_url, options = cloudinary.utils.cloudinary_url(
+                public_id,
+                type="authenticated",
+                sign_url=True,
+            )
+            representation['profile_link'] = temporary_url
+
+        return representation
+
+    def validate_profile_image(self, value):
+        max_size = 10 * 1024 * 1024
+        if value.size > max_size:
+            raise serializers.ValidationError("Image file must be under 10MB")
+        return value
