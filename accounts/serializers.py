@@ -125,6 +125,18 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
     
     def validate_email(self, value):
         return value.lower()
+
+    def validate_contact_number(self, value):
+        if not value.startswith('+63'):
+            raise serializers.ValidationError("Contact number must strictly start with +63.")
+        
+        if len(value) != 13: 
+            raise serializers.ValidationError("Contact number must be exactly 13 characters long (e.g., +639123456789).")
+            
+        if not value[1:].isdigit():
+            raise serializers.ValidationError("Contact number must only contain numbers after the + sign.")
+            
+        return value
     
 
 class CustomLoginSerializer(TokenObtainPairSerializer):
