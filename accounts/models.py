@@ -190,6 +190,19 @@ class tbl_user_profile(AbstractUser):
         default='Unverified'
     )
 
+    contact_number = models.CharField(
+            max_length=13,
+            blank=False,
+            null=False,
+            validators=[
+                RegexValidator(
+                    regex=r'^\+63\d{10}$', 
+                    message="Phone number must start with '+63' followed by 10 digits (e.g., +639123456789)."
+                )
+            ],
+            help_text="User's contact phone number (e.g. +639123456789)"
+        )
+
     def __str__(self):
         return self.username
     

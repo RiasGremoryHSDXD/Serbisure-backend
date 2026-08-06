@@ -20,7 +20,8 @@ Registers a new user (Kasambahay or Homeowner) and prevents duplicate double-cli
     "last_name": "Dela Cruz",
     "email": "juan@example.com",
     "password": "StrongPassword123!",
-    "account_type": "Homeowner"
+    "account_type": "Homeowner",
+    "contact_number": "+639123456789"
 }
 ```
 
