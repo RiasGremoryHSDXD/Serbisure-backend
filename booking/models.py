@@ -1,11 +1,23 @@
 from django.db import models
 from django.conf import settings
-from django.db.models import CheckConstraint, Q
+from django.db.models import CheckConstraint, Q, F
+from django.core.validators import RegexValidator, MinValueValidator
+from decimal import Decimal
+from django.contrib.postgres.fields import ArrayField
 import uuid 
 
 # Create your models here.
 
 class tbl_booking(models.Model):
+
+    SERVICES_OFFER_CHOICES = (
+        ('Cleaning', 'Cleaning'),
+        ('Child_care', 'Child Care'),
+        ('Cooking', 'Cooking'),
+        ('Caregiver','Caregiver'),
+        ('Laundry', 'Laundry'),
+        ('All-around', 'All around')
+    )
 
     BOOKING_TYPE_CHOICES = (
         ('short_term', 'Short Term'),
@@ -49,8 +61,11 @@ class tbl_booking(models.Model):
         null=False
     )
 
-    service_category = models.CharField(
-        max_length=255,
+    service_category = ArrayField(
+        models.CharField(
+            max_length=50,
+            choices=SERVICES_OFFER_CHOICES
+        ),
         blank=False,
         null=False
     )
@@ -71,9 +86,36 @@ class tbl_booking(models.Model):
         null=False
     )
 
-    special_instruction = models.TextField(
+    floor_number = models.CharField(
+        max_length=50,
         blank=True,
         null=True
+    )
+
+    zip_code = models.CharField(
+        max_length=4,
+        validators=[
+            RegexValidator(
+                r'^(0[4-9]\d{2}|[1-9]\d{3})$', 
+                'Must be a valid 4-digit Philippine Zip Code (0400 or higher).'
+            ),
+        ]
+    )
+
+    special_instruction = models.TextField(
+        max_length=1000,
+        blank=True,
+        null=True
+    )
+
+    daily_rate = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        validators=[
+            MinValueValidator(Decimal('1.00'))
+        ],
+        null=False,
+        blank=False
     )
 
     createdAt = models.DateTimeField(
@@ -97,6 +139,27 @@ class tbl_booking(models.Model):
             CheckConstraint(
                 condition=Q(booking_status__in=['Pending', 'Accepted', 'InProgress', 'Completed', 'Cancelled']),
                 name='valid_booking_status_enum'
+            ),
+
+            CheckConstraint(
+                condition=Q(service_category__contained_by=[
+                    'Cleaning', 'Child_care', 'Cooking', 'Caregiver', 'Laundry', 'All-around']),
+                    name='validate_service_category_array'
+            ),
+
+            CheckConstraint(
+                condition=Q(service_category__len__gt=0),
+                name='service_category_not_empty'
+            ),
+
+            CheckConstraint(
+                condition=Q(end_time__gt=F('start_time')) | Q(end_time__isnull=True),
+                name='end_time_after_start_time'
+            ),
+            
+            CheckConstraint(
+                condition=Q(daily_rate__gte=Decimal('1.00')),
+                name='valid_daily_rate'
             )
         ]
 
