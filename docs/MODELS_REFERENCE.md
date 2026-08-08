@@ -64,11 +64,14 @@ This document outlines the database schema, models, field types, and choices (en
 | `poster_id` | `ForeignKey` | FK -> `tbl_user_profile` |
 | `booking_type` | `CharField` | Choices: ['short_term', 'long_term'] |
 | `booking_status` | `CharField` | Choices: ['Pending', 'Accepted', 'InProgress', 'Completed', 'Cancelled'] |
-| `service_category` | `CharField` | - |
+| `service_category` | `ArrayField` | - |
 | `start_time` | `DateTimeField` | - |
 | `end_time` | `DateTimeField` | Null=True, Blank=True |
 | `service_address` | `CharField` | - |
+| `floor_number` | `CharField` | Null=True, Blank=True |
+| `zip_code` | `CharField` | - |
 | `special_instruction` | `TextField` | Null=True, Blank=True |
+| `daily_rate` | `DecimalField` | - |
 | `createdAt` | `DateTimeField` | Blank=True |
 
 ### `tbl_booking_assignment`
