@@ -67,7 +67,7 @@ class UserRegistrationView(APIView):
             user = serializer.save()
 
             from rest_framework_simplejwt.tokens import RefreshToken
-            refresh = RefreshToken.for_user(user)
+            refresh = CustomLoginSerializer.get_token(user)
 
             response_data = {
                 "message": "Account created successfully",
