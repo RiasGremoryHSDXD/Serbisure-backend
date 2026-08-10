@@ -5,7 +5,7 @@ from core.utils import check_valid_uuid
 from rest_framework import status
 from rest_framework.response import Response
 from rest_framework import generics
-from .serializers import BookingSerializer
+from .serializers import BookingSerializer, BookingFeedSerializer
 from .models import tbl_booking
 from django.core.cache import cache
 from core.utils import check_input_letters
@@ -77,3 +77,27 @@ class BookingView(generics.CreateAPIView):
 
         raise Throttled(detail=custom_message)
 
+class BookingFeedView(generics.ListAPIView):
+    permission_classes = [IsAuthenticated]
+
+    serializer_class = BookingFeedSerializer
+
+    def get_queryset(self):
+
+        # Identify the user who is making the request
+        current_user = self.request.user
+
+        # Get the base query (I added a filter so we only show 'Pending' bookings in the feed, ignoring completed ones!)
+        queryset = tbl_booking.objects.select_related('poster_id').filter(booking_status='Pending')
+
+        # 3. Filter based on their account type!
+        if current_user.account_type == 'Homeowner':
+            # Homeowners only see posts made by Kasambahays
+            queryset = queryset.filter(poster_id__account_type='Kasambahay')
+        
+        elif current_user.account_type == 'Kasambahay':
+            # Kasambahays only see posts made by Homeowners
+            queryset = queryset.filter(poster_id__account_type='Homeowner')
+        
+        # Return the final filtered list, newest first
+        return queryset.order_by('-createdAt')
