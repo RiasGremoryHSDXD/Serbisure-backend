@@ -1,6 +1,7 @@
 from rest_framework import serializers
 from .models import tbl_booking
 from django.utils import timezone
+import cloudinary.utils
 
 class BookingSerializer(serializers.ModelSerializer):
 
@@ -26,3 +27,44 @@ class BookingSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError({"end_time": "End time must be strictly after the start time."})
 
         return data
+
+class BookingFeedSerializer(serializers.ModelSerializer):
+
+    profile_link = serializers.SerializerMethodField()
+    name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = tbl_booking
+
+        fields = [
+            'booking_id',
+            'profile_link',
+            'name',
+            'service_address',
+            'service_category',
+            'daily_rate'
+        ]
+
+    
+    def get_name(self, obj):
+        
+        first_name = obj.poster_id.first_name or ''
+        middle_name = obj.poster_id.middle_name or ''
+        last_name = obj.poster_id.last_name or ''
+
+        return f"{first_name} {middle_name} {last_name}".strip()
+    
+    def get_profile_link(self, obj):
+
+        public_id = obj.poster_id.profile_link
+        
+        if not public_id: 
+            return None
+        
+        temporary_url, _ = cloudinary.utils.cloudinary_url(
+            public_id,
+            type="authenticated",
+            sign_url=True
+        )
+
+        return temporary_url

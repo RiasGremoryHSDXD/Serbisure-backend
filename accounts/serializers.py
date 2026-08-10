@@ -138,12 +138,63 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
             
         return value
     
+    @classmethod
+    def get_token(cls, user):
+        token = super().get_token(user)
+    
+        token['first_name'] = user.first_name
+        token['middle_name'] = user.middle_name
+        token['last_name'] = user.last_name
+        token['account_type'] = user.account_type
+        token['verification_status'] = user.verification_status
+        token['language'] = user.language
+
+        public_id = user.profile_link
+
+        if not public_id:
+            return token
+        
+        temporary_url, _ = cloudinary.utils.cloudinary_url(
+            public_id,
+            type="authenticated",
+            sign_url=True
+        )
+
+        token['profile_link'] = temporary_url
+
+        return token
+    
 
 class CustomLoginSerializer(TokenObtainPairSerializer):
     default_error_messages = {
         "no_active_account": "Wrong email or password. Please try again!"
     }
+
+    @classmethod
+    def get_token(cls, user):
+        token = super().get_token(user)
     
+        token['first_name'] = user.first_name
+        token['middle_name'] = user.middle_name
+        token['last_name'] = user.last_name
+        token['account_type'] = user.account_type
+        token['verification_status'] = user.verification_status
+        token['language'] = user.language
+
+        public_id = user.profile_link
+
+        if not public_id:
+            return token
+        
+        temporary_url, _ = cloudinary.utils.cloudinary_url(
+            public_id,
+            type="authenticated",
+            sign_url=True
+        )
+
+        token['profile_link'] = temporary_url
+
+        return token
     
     def validate(self, attrs):
         # This will verify the email and password first
@@ -191,7 +242,7 @@ class ProfileImageUploadSerializer(serializers.ModelSerializer):
         public_id = instance.profile_link
 
         if public_id:
-            temporary_url, options = cloudinary.utils.cloudinary_url(
+            temporary_url, _ = cloudinary.utils.cloudinary_url(
                 public_id,
                 type="authenticated",
                 sign_url=True,
