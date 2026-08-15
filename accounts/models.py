@@ -2,7 +2,25 @@ from django.contrib.auth.models import AbstractUser, BaseUserManager
 from django.db import models
 from django.db.models import CheckConstraint, Q
 from django.core.validators import RegexValidator
+from django.core.exceptions import ValidationError
+from django.db.models.expressions import RawSQL
 import uuid 
+
+def validate_user_tags(value):
+
+    if not isinstance(value, list):
+        raise ValidationError("User tags must be a list")
+    
+    if len(value) > 10:
+        raise ValidationError("You can add a maximum of 10 tags.")
+
+    for tag in value:
+        if not isinstance(tag, str):
+            raise ValidationError("Each user tags must be text")
+        
+        if len(tag) > 15:
+            raise ValidationError(f"Tag '{tag}' exceeds 15 characters")
+
 
 class CustomUserManager(BaseUserManager):
 
@@ -158,18 +176,6 @@ class tbl_user_profile(AbstractUser):
         null=True
     )
 
-    contact_number = models.CharField(
-        max_length=15,
-        blank=True,
-        null=True,
-        validators=[
-            RegexValidator(
-                regex=r'^639\d{9}$',
-                message='Contact number must be exactly 12 digits and start with "639"'
-            )
-        ]
-    )
-
     language = models.CharField(
         max_length=100, 
         blank=True, 
@@ -202,12 +208,25 @@ class tbl_user_profile(AbstractUser):
             null=False,
             validators=[
                 RegexValidator(
-                    regex=r'^\+63\d{10}$', 
+                    regex=r'^\+639\d{9}$', 
                     message="Phone number must start with '+63' followed by 10 digits (e.g., +639123456789)."
                 )
             ],
             help_text="User's contact phone number (e.g. +639123456789)"
         )
+
+    user_about = models.TextField(
+        max_length=500,
+        blank=True,
+        null=False,
+        default='No Bio'
+    )
+
+    user_tags = models.JSONField(
+        default=list,
+        blank=True,
+        validators=[validate_user_tags]
+    )
 
     def __str__(self):
         return self.username
@@ -229,5 +248,10 @@ class tbl_user_profile(AbstractUser):
             CheckConstraint(
                 condition=Q(gender__in=['Male', 'Female', 'Other']),
                 name='valid_gender_enum'
+            ),
+
+            CheckConstraint(
+                condition=RawSQL("jsonb_typeof(user_tags) = 'array'", [], output_field=models.BooleanField()),
+                name='valid_user_tags_must_be_array'
             )
         ]
