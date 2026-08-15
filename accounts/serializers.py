@@ -127,7 +127,7 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
         return value.lower()
 
     def validate_contact_number(self, value):
-        if not value.startswith('+63'):
+        if not value.startswith('+639'):
             raise serializers.ValidationError("Contact number must strictly start with +63.")
         
         if len(value) != 13: 
@@ -256,3 +256,15 @@ class ProfileImageUploadSerializer(serializers.ModelSerializer):
         if value.size > max_size:
             raise serializers.ValidationError("Image file must be under 10MB")
         return value
+
+class UserAboutSerializer(serializers.ModelSerializer):
+
+    class Meta:
+        model = tbl_user_profile
+        fields = ['user_about']
+
+class UserTagsSerializer(serializers.ModelSerializer):
+    
+    class Meta:
+        model = tbl_user_profile
+        fields = ['user_tags']
