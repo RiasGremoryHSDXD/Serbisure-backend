@@ -1,9 +1,9 @@
 from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from .serializers import UserRegistrationSerializer, CustomLoginSerializer
+from .serializers import UserRegistrationSerializer, CustomLoginSerializer, UserAboutSerializer, UserTagsSerializer
 from rest_framework_simplejwt.views import TokenObtainPairView
-from rest_framework.throttling import AnonRateThrottle
+from rest_framework.throttling import AnonRateThrottle, UserRateThrottle
 from rest_framework.exceptions import Throttled
 from django.core.cache import cache
 from core.utils import check_valid_uuid
@@ -36,6 +36,7 @@ class UserRegistrationView(APIView):
             )
         ]
     )
+
     def post(self, request):
 
         # Look for the special header send by the frontend (or Postman)
@@ -169,3 +170,49 @@ class ProfileImageUploadView(generics.UpdateAPIView):
     def get_object(self):
         # We automatically return the logged-in user!
         return self.request.user
+
+
+class UserAboutThrottle(UserRateThrottle):
+    rate = '10/h'
+
+class UserAboutView(generics.UpdateAPIView):
+    permission_classes = [IsAuthenticated]
+    serializer_class = UserAboutSerializer
+    throttle_classes = [UserAboutThrottle]
+
+    def get_object(self):
+        return self.request.user
+
+    def throttled(self, request, wait):        
+        # 3600 seconds = 1 hour
+        if wait > 3600: 
+            time_left = math.ceil(wait / 3600)
+            custom_message = f"Too many attempts. Please try again in {time_left} hours."
+
+        else:
+            custom_message = f"Too many attempts. Please try again in {math.ceil(wait/60)} minutes."
+
+        raise Throttled(detail=custom_message)
+
+class UserTagsThrottle(UserRateThrottle):
+    rate = '10/h'
+
+class UserTagsView(generics.UpdateAPIView):
+
+    permission_classes = [IsAuthenticated]
+    serializer_class = UserTagsSerializer
+    throttle_classes = [UserTagsThrottle]
+
+    def get_object(self):
+        return self.request.user
+    
+    def throttled(self, request, wait):        
+        # 3600 seconds = 1 hour
+        if wait > 3600: 
+            time_left = math.ceil(wait / 3600)
+            custom_message = f"Too many attempts. Please try again in {time_left} hours."
+
+        else:
+            custom_message = f"Too many attempts. Please try again in {math.ceil(wait/60)} minutes."
+
+        raise Throttled(detail=custom_message)

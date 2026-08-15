@@ -35,6 +35,8 @@ This document outlines the database schema, models, field types, and choices (en
 | `account_type` | `CharField` | Choices: ['Kasambahay', 'Homeowner', 'Barangay', 'Admin'] |
 | `verification_status` | `CharField` | Choices: ['Unverified', 'Pending', 'Verified', 'Rejected'] |
 | `contact_number` | `CharField` | - |
+| `user_about` | `TextField` | Blank=True |
+| `user_tags` | `JSONField` | Blank=True |
 
 ## Verifications App
 

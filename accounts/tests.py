@@ -1,153 +1,788 @@
+"""
+accounts/tests.py
+=================
+Test suite for the accounts application.
+
+Coverage map:
+  - TestUserModels          → Django ORM model-level sanity checks
+  - TestSerializers         → Business logic & validation inside serializers
+  - TestUserAPIEndpoints    → HTTP-level integration tests (register, login,
+                              user-about, user-tags)
+
+Naming convention:
+  test_<thing>_<condition>_<expected_outcome>
+  e.g. test_password_no_number_rejected
+
+Run all account tests:
+  python manage.py test accounts
+
+Run a single class:
+  python manage.py test accounts.tests.TestUserAPIEndpoints
+"""
+
 from django.test import TestCase
 from rest_framework.test import APIClient
 from rest_framework import status
 from django.core.cache import cache
 from .models import tbl_user_profile
 from .serializers import UserRegistrationSerializer
-import uuid 
+import uuid
 
+
+# =============================================================================
+# SECTION 1 — MODEL TESTS
+# Purpose: Verify that the Django ORM behaves correctly at the model layer,
+#          independent of any HTTP request. If these fail, the DB schema or
+#          CustomUserManager has a bug.
+# =============================================================================
 
 class TestUserModels(TestCase):
-    
-    def test_create_superuser(self):
-        """
-        Ensure the terminal command can successfully create superadmin
-        """
 
+    def test_create_superuser_flags_are_set(self):
+        """
+        GIVEN  a call to create_superuser()
+        WHEN   the user is saved to the DB
+        THEN   is_superuser=True, is_staff=True, and username is preserved.
+
+        Why this matters: Superuser creation is used in production via the
+        'python manage.py createsuperuser' command. If the CustomUserManager
+        breaks this, no one can log into the Django admin panel.
+        """
         admin = tbl_user_profile.objects.create_superuser(
-            username = "admin_master",
+            username="admin_master",
             email="admin@example.com",
             password="StrongPassword123!"
         )
-
         self.assertTrue(admin.is_superuser)
         self.assertTrue(admin.is_staff)
         self.assertEqual(admin.username, "admin_master")
 
+    def test_user_tags_field_defaults_to_empty_list(self):
+        """
+        GIVEN  a freshly created user with no user_tags provided
+        WHEN   we read user.user_tags from the DB
+        THEN   it should be [] (empty list), NOT None or a string.
+
+        Why this matters: The JSONField default=list must produce [] not null.
+        If this is None, the frontend will crash trying to iterate over tags.
+        """
+        user = tbl_user_profile.objects.create_user(
+            username="tagtest",
+            email="tagtest@example.com",
+            password="Password123!",
+            contact_number="+639123456789"
+        )
+        self.assertEqual(user.user_tags, [])
+        self.assertIsInstance(user.user_tags, list)
+
+    def test_user_about_field_defaults_to_no_bio(self):
+        """
+        GIVEN  a freshly created user with no user_about provided
+        WHEN   we read user.user_about from the DB
+        THEN   it should be the string 'No Bio'
+
+        Why this matters: The ProfileScreen renders user_about. A None value
+        would cause a crash or display 'null' on the mobile UI.
+        """
+        user = tbl_user_profile.objects.create_user(
+            username="abouttest",
+            email="abouttest@example.com",
+            password="Password123!",
+            contact_number="+639123456789"
+        )
+        self.assertEqual(user.user_about, "No Bio")
+
+
+# =============================================================================
+# SECTION 2 — SERIALIZER TESTS
+# Purpose: Validate that all custom validate_* methods inside
+#          UserRegistrationSerializer reject bad data and accept good data.
+#          These tests do NOT make HTTP calls — they are pure Python unit tests.
+# =============================================================================
+
 class TestSerializers(TestCase):
-    
+
     def setUp(self):
+        """
+        Baseline valid payload that passes ALL validators.
+        Each test mutates one field at a time to isolate specific rules.
+        """
         self.valid_data = {
             "email": "test@example.com",
             "password": "StrongPassword123!",
             "first_name": "Juan",
             "middle_name": "Dela",
             "last_name": "Cruz",
+            "contact_number": "+639123456789",
             "account_type": "Homeowner"
         }
-    
-    def test_admin_account_blocked(self):
-        """
-        Ensure nobody can create an Admin account through the public serializers
-        """
 
+    # ── ACCOUNT TYPE ──────────────────────────────────────────────────────────
+
+    def test_admin_account_type_blocked_from_public_registration(self):
+        """
+        GIVEN  account_type='Admin'
+        THEN   serializer must be invalid.
+
+        Security rule: Admins can only be created via the terminal
+        (createsuperuser). This prevents privilege escalation through the API.
+        """
         self.valid_data["account_type"] = "Admin"
         serializer = UserRegistrationSerializer(data=self.valid_data)
         self.assertFalse(serializer.is_valid())
+        self.assertIn("account_type", serializer.errors)
 
-    def test_password_validation(self):
+    # ── PASSWORD ──────────────────────────────────────────────────────────────
+
+    def test_password_letters_only_rejected(self):
         """
-        Ensure password without number or letters are Rejected
+        GIVEN  a password with no digits (e.g. 'alllettersonly')
+        THEN   serializer must be invalid.
+        Rule: Password must contain at least one number.
         """
-        self.valid_data["password"] = "allletters"
+        self.valid_data["password"] = "alllettersonly"
         serializer = UserRegistrationSerializer(data=self.valid_data)
         self.assertFalse(serializer.is_valid())
+        self.assertIn("password", serializer.errors)
 
-        self.valid_data["password"] = "123456789"
+    def test_password_digits_only_rejected(self):
+        """
+        GIVEN  a password with no letters (e.g. '12345678901')
+        THEN   serializer must be invalid.
+        Rule: Password must contain at least one letter.
+        """
+        self.valid_data["password"] = "12345678901"
         serializer = UserRegistrationSerializer(data=self.valid_data)
         self.assertFalse(serializer.is_valid())
+        self.assertIn("password", serializer.errors)
 
-    def test_username_auto_generation(self):
+    def test_password_under_11_chars_rejected(self):
         """
-        Ensure the Serializer successfully builds the clean UUID username
+        GIVEN  a password shorter than 11 characters
+        THEN   serializer must be invalid.
+        Boundary: min length is 11 chars.
+        """
+        self.valid_data["password"] = "Short1!"  # 7 chars
+        serializer = UserRegistrationSerializer(data=self.valid_data)
+        self.assertFalse(serializer.is_valid())
+        self.assertIn("password", serializer.errors)
+
+    def test_password_over_30_chars_rejected(self):
+        """
+        GIVEN  a password longer than 30 characters
+        THEN   serializer must be invalid.
+        Boundary: max length is 30 chars.
+
+        TODO: This test currently FAILS because validate_password() in
+        UserRegistrationSerializer does not enforce a max_length of 30.
+        Add `if len(value) > 30: raise serializers.ValidationError(...)` to fix.
+        Once the serializer rule is added, remove the `skipTest` line below.
+        """
+        self.valid_data["password"] = "A" * 29 + "1!"  # 31 chars
+        serializer = UserRegistrationSerializer(data=self.valid_data)
+        self.assertFalse(serializer.is_valid())
+        self.assertIn("password", serializer.errors)
+
+    # ── USERNAME AUTO-GENERATION ──────────────────────────────────────────────
+
+    def test_username_is_auto_generated_from_name(self):
+        """
+        GIVEN  valid registration data
+        WHEN   serializer.save() is called
+        THEN   user.username starts with '<first><middle><last>_' (lowercase)
+               AND the raw password is hashed (check_password returns True).
+
+        Why this matters: We do not expose usernames in registration — they are
+        auto-generated. If this breaks, users would need to supply usernames.
         """
         serializer = UserRegistrationSerializer(data=self.valid_data)
-        self.assertTrue(serializer.is_valid())
+        self.assertTrue(serializer.is_valid(), serializer.errors)
         user = serializer.save()
-
         self.assertTrue(user.username.startswith("juandelacruz_"))
         self.assertTrue(user.check_password("StrongPassword123!"))
 
+    # ── CONTACT NUMBER ────────────────────────────────────────────────────────
+
+    def test_contact_number_wrong_prefix_rejected(self):
+        """
+        GIVEN  contact_number that does NOT start with '+639'
+        THEN   serializer must be invalid.
+        Rule: All Philippine mobile numbers start with +639.
+        """
+        self.valid_data["contact_number"] = "+631234567890"  # +631 prefix
+        serializer = UserRegistrationSerializer(data=self.valid_data)
+        self.assertFalse(serializer.is_valid())
+        self.assertIn("contact_number", serializer.errors)
+
+    def test_contact_number_too_short_rejected(self):
+        """
+        GIVEN  contact_number with fewer than 13 characters
+        THEN   serializer must be invalid.
+        Boundary: exactly 13 chars required (e.g. +639XXXXXXXXX).
+        """
+        self.valid_data["contact_number"] = "+6391234567"   # 11 chars
+        serializer = UserRegistrationSerializer(data=self.valid_data)
+        self.assertFalse(serializer.is_valid())
+
+    def test_contact_number_too_long_rejected(self):
+        """
+        GIVEN  contact_number with more than 13 characters
+        THEN   serializer must be invalid.
+        """
+        self.valid_data["contact_number"] = "+63912345678901"  # 15 chars
+        serializer = UserRegistrationSerializer(data=self.valid_data)
+        self.assertFalse(serializer.is_valid())
+
+    def test_contact_number_with_letters_rejected(self):
+        """
+        GIVEN  contact_number containing non-digit characters after '+'
+        THEN   serializer must be invalid.
+        """
+        self.valid_data["contact_number"] = "+639ABCDEFGHI"
+        serializer = UserRegistrationSerializer(data=self.valid_data)
+        self.assertFalse(serializer.is_valid())
+
+    def test_contact_number_valid_format_accepted(self):
+        """
+        GIVEN  a well-formed +639XXXXXXXXX contact number
+        THEN   serializer must be valid (happy path).
+        """
+        self.valid_data["contact_number"] = "+639123456789"
+        serializer = UserRegistrationSerializer(data=self.valid_data)
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+
+    # ── EMAIL ─────────────────────────────────────────────────────────────────
+
+    def test_email_is_normalized_to_lowercase(self):
+        """
+        GIVEN  email submitted in uppercase (e.g. 'TEST@EXAMPLE.COM')
+        WHEN   serializer saves the user
+        THEN   user.email is stored as lowercase 'test@example.com'.
+
+        Why this matters: Prevents duplicate accounts from 'User@x.com'
+        vs 'user@x.com' which are the same email address.
+        """
+        self.valid_data["email"] = "TEST@EXAMPLE.COM"
+        serializer = UserRegistrationSerializer(data=self.valid_data)
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        user = serializer.save()
+        self.assertEqual(user.email, "test@example.com")
+
+    # ── AGE VALIDATION ────────────────────────────────────────────────────────
+
+    def test_underage_user_registration_rejected(self):
+        """
+        GIVEN  a date_of_birth making the user under 18 years old
+        THEN   serializer must be invalid.
+
+        Legal requirement: Serbisure is a labor platform. Minors cannot
+        legally enter employment contracts in the Philippines.
+        """
+        self.valid_data["date_of_birth"] = "2015-01-01"  # ~11 years old
+        serializer = UserRegistrationSerializer(data=self.valid_data)
+        self.assertFalse(serializer.is_valid())
+        self.assertIn("date_of_birth", serializer.errors)
+
+
+# =============================================================================
+# SECTION 3 — API ENDPOINT INTEGRATION TESTS
+# Purpose: End-to-end HTTP tests simulating exactly what the mobile app does.
+#          These tests hit the actual URL router, views, serializers, and DB.
+#
+# Endpoints under test:
+#   POST   /api/v1/accounts/register/    → UserRegistrationView
+#   POST   /api/v1/accounts/login/       → CustomLoginView
+#   PATCH  /api/v1/accounts/user-about/  → UserAboutView
+#   PATCH  /api/v1/accounts/user-tags/   → UserTagsView
+# =============================================================================
+
 class TestUserAPIEndpoints(TestCase):
-    
+
     def setUp(self):
+        """
+        Shared setup for all API tests.
+        - Each test gets a fresh in-memory DB (Django isolates tests).
+        - cache.clear() resets throttle counters between tests.
+        - self.valid_payload is the minimum required to register a user.
+        """
         self.client = APIClient()
+
+        # Endpoint URLs — keep these in sync with accounts/urls.py
         self.register_url = "/api/v1/accounts/register/"
-        self.login_url = "/api/v1/accounts/login/"
-        cache.clear() 
-    
+        self.login_url    = "/api/v1/accounts/login/"
+        self.about_url    = "/api/v1/accounts/user-about/"
+        self.tags_url     = "/api/v1/accounts/user-tags/"
+
+        # Reset throttle counters so tests don't bleed into each other
+        cache.clear()
+
         self.valid_payload = {
             "email": "api@example.com",
             "password": "StrongPassword123!",
             "first_name": "Naruto",
             "last_name": "Uzumaki",
+            "contact_number": "+639123456789",
             "account_type": "Homeowner"
         }
+        self.idempotency_key = str(uuid.uuid4())
 
-        self.idempotency_key  = str(uuid.uuid4())
+    # ── TEST HELPER ───────────────────────────────────────────────────────────
 
-    def test_registration_require_idempotency_key(self):
+    def _create_and_login_user(
+        self,
+        email="testuser@example.com",
+        password="StrongPassword123!",
+        username="testuser"
+    ):
         """
-        Ensure successful registration and test that double-clinking return the cache
-        """
+        Helper that bypasses the registration endpoint and directly creates
+        a user in the DB, then logs in to get a real JWT access token.
 
-        # 1st Click (Should hit the database and return 201)
-        response1 = self.client.post(
+        Returns: (user_instance, access_token_string)
+
+        Why use this instead of the register endpoint?
+        Keeps tests focused: user-about and user-tags tests don't care about
+        registration logic — they only need an authenticated token.
+        """
+        user = tbl_user_profile.objects.create_user(
+            username=username,
+            email=email,
+            password=password,
+            contact_number="+639123456789"
+        )
+        response = self.client.post(self.login_url, {
+            "email": email,
+            "password": password
+        })
+        token = response.data.get("access")
+        return user, token
+
+    # ── REGISTRATION TESTS ────────────────────────────────────────────────────
+
+    def test_register_success_returns_201_and_jwt_tokens(self):
+        """
+        GIVEN  valid registration data + a valid UUID Idempotency-Key
+        WHEN   POST /register/
+        THEN   201 Created, body contains 'access' and 'refresh' JWT tokens.
+
+        The frontend uses these tokens immediately to log the user in
+        without requiring a separate login step after registration.
+        """
+        response = self.client.post(
             self.register_url,
             self.valid_payload,
             HTTP_IDEMPOTENCY_KEY=self.idempotency_key
         )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertIn("access", response.data)
+        self.assertIn("refresh", response.data)
 
-        self.assertEqual(response1.status_code, status.HTTP_201_CREATED)
-        self.assertEqual(tbl_user_profile.objects.count(), 1)
+    def test_register_idempotency_double_click_safe(self):
+        """
+        GIVEN  the same idempotency key used on 2 identical POST requests
+        WHEN   user double-taps the Register button
+        THEN   only 1 user row is created in the DB; both requests return 201.
 
-        # 2nd Click (should instally return 201 from the Cache without hitting the DB)
-        response2 = self.client.post(
-            self.register_url,
-            self.valid_payload,
-            HTTP_IDEMPOTENCY_KEY=self.idempotency_key 
+        Critical UX bug prevention: without this, a slow network + impatient
+        user double-tap would create 2 accounts with the same email,
+        causing an 'email already exists' error on the second attempt.
+        """
+        # First tap — hits the DB and creates 1 user
+        self.client.post(
+            self.register_url, self.valid_payload,
+            HTTP_IDEMPOTENCY_KEY=self.idempotency_key
         )
-
-        self.assertEqual(response2.status_code, status.HTTP_201_CREATED)
         self.assertEqual(tbl_user_profile.objects.count(), 1)
 
-    def test_login_success(self):
-        """
-        Ensure user can get JWT token
-        """
+        # Second tap — served from cache, no DB write
+        response2 = self.client.post(
+            self.register_url, self.valid_payload,
+            HTTP_IDEMPOTENCY_KEY=self.idempotency_key
+        )
+        self.assertEqual(response2.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(tbl_user_profile.objects.count(), 1)  # Still 1!
 
+    def test_register_missing_idempotency_key_returns_400(self):
+        """
+        GIVEN  a registration request with NO Idempotency-Key header
+        THEN   400 Bad Request.
+
+        The header is mandatory. The frontend must generate a UUID v4 before
+        calling this endpoint.
+        """
+        response = self.client.post(self.register_url, self.valid_payload)
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_register_non_uuid_idempotency_key_returns_400(self):
+        """
+        GIVEN  Idempotency-Key header contains a plain string (not a UUID)
+        THEN   400 Bad Request.
+
+        Prevents abuse: sending 'abc' as a key would bypass the idempotency
+        check because it's not a valid UUID format.
+        """
+        response = self.client.post(
+            self.register_url, self.valid_payload,
+            HTTP_IDEMPOTENCY_KEY="not-a-valid-uuid"
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_register_admin_account_type_blocked(self):
+        """
+        GIVEN  registration data with account_type='Admin'
+        THEN   400 Bad Request.
+
+        Privilege escalation guard: No one should be able to self-promote
+        to Admin through the public registration API.
+        """
+        self.valid_payload["account_type"] = "Admin"
+        response = self.client.post(
+            self.register_url, self.valid_payload,
+            HTTP_IDEMPOTENCY_KEY=str(uuid.uuid4())
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_register_duplicate_email_rejected(self):
+        """
+        GIVEN  a second registration attempt with the same email
+        WHEN   a different Idempotency-Key is used (genuine second attempt)
+        THEN   400 Bad Request — email must be unique.
+        """
+        # First registration — succeeds
+        self.client.post(
+            self.register_url, self.valid_payload,
+            HTTP_IDEMPOTENCY_KEY=self.idempotency_key
+        )
+        # Second attempt with same email but a new key — must fail
+        response = self.client.post(
+            self.register_url, self.valid_payload,
+            HTTP_IDEMPOTENCY_KEY=str(uuid.uuid4())
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    # ── LOGIN TESTS ───────────────────────────────────────────────────────────
+
+    def test_login_valid_credentials_returns_jwt_tokens(self):
+        """
+        GIVEN  a registered user with a known email and password
+        WHEN   POST /login/ with correct credentials
+        THEN   200 OK, body has 'access' and 'refresh' tokens.
+        """
         tbl_user_profile.objects.create_user(
             username="testuser",
             email="login@example.com",
             password="password123!"
         )
-
         response = self.client.post(self.login_url, {
             "email": "login@example.com",
             "password": "password123!"
         })
-
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertIn("access", response.data)
         self.assertIn("refresh", response.data)
 
-    def test_login_brute_force_protection(self):
+    def test_login_wrong_password_returns_401(self):
         """
-        Ensure hacker are locked out after 5 failed attempts
+        GIVEN  a valid email but incorrect password
+        THEN   401 Unauthorized — generic error, no info leak.
         """
+        tbl_user_profile.objects.create_user(
+            username="testuser2",
+            email="login2@example.com",
+            password="password123!"
+        )
+        response = self.client.post(self.login_url, {
+            "email": "login2@example.com",
+            "password": "WrongPassword!"
+        })
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
 
-        for i in range(5):
-            response = self.client.post(self.login_url, {
+    def test_login_nonexistent_email_returns_401(self):
+        """
+        GIVEN  an email that has never been registered
+        THEN   401 Unauthorized.
+
+        NOTE: We intentionally return 401 (not 404) so attackers cannot
+        enumerate whether an email is registered in our system.
+        """
+        response = self.client.post(self.login_url, {
+            "email": "nobody@example.com",
+            "password": "SomePassword123!"
+        })
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_login_admin_account_blocked_from_mobile_api(self):
+        """
+        GIVEN  an Admin/superuser account
+        WHEN   they try to login through the mobile API
+        THEN   401 Unauthorized — same generic error as wrong password.
+
+        Security: Admin accounts must use the Django admin panel (/admin/).
+        Blocking them here prevents accidental exposure of admin tokens
+        to mobile devices, which are less secure than desktops.
+        """
+        tbl_user_profile.objects.create_superuser(
+            username="adminuser",
+            email="admin@example.com",
+            password="AdminPassword123!"
+        )
+        response = self.client.post(self.login_url, {
+            "email": "admin@example.com",
+            "password": "AdminPassword123!"
+        })
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_login_brute_force_locked_out_after_5_attempts(self):
+        """
+        GIVEN  an attacker making 5 failed login attempts (sliding window)
+        WHEN   they make a 6th attempt
+        THEN   429 Too Many Requests — sliding window throttle kicks in.
+
+        The first 5 attempts return 401 (wrong password).
+        Attempt 6+ returns 429 until the 5-minute window passes.
+        """
+        for _ in range(5):
+            self.client.post(self.login_url, {
                 "email": "hacker@example.com",
                 "password": "WrongPassword!"
             })
-        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
 
-
-        # The 6th Attempt should trigger the sliding window Throttle
+        # 6th attempt — should now be rate-limited
         response6 = self.client.post(self.login_url, {
-            "email":"hacker@example.com",
+            "email": "hacker@example.com",
             "password": "WrongPassword!"
         })
-
         self.assertEqual(response6.status_code, status.HTTP_429_TOO_MANY_REQUESTS)
+
+    # ── USER ABOUT TESTS ──────────────────────────────────────────────────────
+
+    def test_user_about_unauthenticated_request_returns_401(self):
+        """
+        GIVEN  no Authorization header (not logged in)
+        WHEN   PATCH /user-about/
+        THEN   401 Unauthorized.
+
+        IsAuthenticated permission guard must be enforced.
+        """
+        response = self.client.patch(self.about_url, {"user_about": "Hello!"})
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_user_about_authenticated_update_succeeds(self):
+        """
+        GIVEN  an authenticated user
+        WHEN   PATCH /user-about/ with valid bio text
+        THEN   200 OK and user.user_about is updated in the DB.
+        """
+        user, token = self._create_and_login_user()
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+
+        response = self.client.patch(self.about_url, {"user_about": "I am a great homeowner!"})
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        user.refresh_from_db()
+        self.assertEqual(user.user_about, "I am a great homeowner!")
+
+    def test_user_about_empty_string_is_accepted(self):
+        """
+        GIVEN  user_about = '' (empty string)
+        THEN   200 OK — blank=True on the model field allows this.
+
+        Use case: user wants to clear their bio.
+        """
+        user, token = self._create_and_login_user()
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+        response = self.client.patch(self.about_url, {"user_about": ""})
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_user_about_exactly_500_chars_is_accepted(self):
+        """
+        GIVEN  user_about is exactly 500 characters long
+        THEN   200 OK — this is the max boundary value; it must be accepted.
+        """
+        user, token = self._create_and_login_user()
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+        response = self.client.patch(self.about_url, {"user_about": "A" * 500})
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_user_about_501_chars_is_rejected(self):
+        """
+        GIVEN  user_about is 501 characters long
+        THEN   400 Bad Request — exceeds max_length=500.
+
+        Off-by-one boundary test: 500 = pass, 501 = fail.
+        """
+        user, token = self._create_and_login_user()
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+        response = self.client.patch(self.about_url, {"user_about": "A" * 501})
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_user_about_cannot_update_another_users_bio(self):
+        """
+        GIVEN  user A is authenticated
+        WHEN   they PATCH /user-about/
+        THEN   only user A's bio changes — user B's bio is untouched.
+
+        Security: get_object() returns self.request.user, so there is no way
+        to target another user's record. This test verifies that isolation.
+        """
+        user_a, token_a = self._create_and_login_user(email="usera@example.com", username="usera")
+        user_b = tbl_user_profile.objects.create_user(
+            username="userb", email="userb@example.com",
+            password="Password123!", contact_number="+639111111111"
+        )
+        original_bio = user_b.user_about  # save baseline
+
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {token_a}")
+        self.client.patch(self.about_url, {"user_about": "Hacked bio!"})
+
+        # User B's bio must remain unchanged
+        user_b.refresh_from_db()
+        self.assertEqual(user_b.user_about, original_bio)
+
+    # ── USER TAGS TESTS ───────────────────────────────────────────────────────
+
+    def test_user_tags_unauthenticated_request_returns_401(self):
+        """
+        GIVEN  no Authorization header
+        WHEN   PATCH /user-tags/
+        THEN   401 Unauthorized.
+        """
+        response = self.client.patch(self.tags_url, {"user_tags": ["Non-Smoker"]}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_user_tags_authenticated_update_succeeds(self):
+        """
+        GIVEN  a valid JSON array of string tags
+        WHEN   PATCH /user-tags/
+        THEN   200 OK and user.user_tags is updated in the DB.
+
+        NOTE: Must use format='json' so DRF parses the array correctly.
+        Without format='json', the array becomes a multipart string.
+        """
+        user, token = self._create_and_login_user()
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+        response = self.client.patch(
+            self.tags_url,
+            {"user_tags": ["Non-Smoker", "Respectful", "Pet Owner"]},
+            format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        user.refresh_from_db()
+        self.assertEqual(user.user_tags, ["Non-Smoker", "Respectful", "Pet Owner"])
+
+    def test_user_tags_empty_array_clears_all_tags(self):
+        """
+        GIVEN  user_tags = [] (empty array)
+        THEN   200 OK — allows the user to remove all their tags.
+        """
+        user, token = self._create_and_login_user()
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+        response = self.client.patch(self.tags_url, {"user_tags": []}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        user.refresh_from_db()
+        self.assertEqual(user.user_tags, [])
+
+    def test_user_tags_exactly_10_tags_is_accepted(self):
+        """
+        GIVEN  exactly 10 tags (boundary maximum)
+        THEN   200 OK — 10 is the allowed maximum.
+        """
+        user, token = self._create_and_login_user()
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+        ten_tags = [f"Tag{i:02d}" for i in range(10)]  # Tag00, Tag01, ... Tag09
+        response = self.client.patch(self.tags_url, {"user_tags": ten_tags}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_user_tags_11_tags_is_rejected(self):
+        """
+        GIVEN  11 tags (one over the maximum)
+        THEN   400 Bad Request.
+
+        Off-by-one boundary test: 10 = pass, 11 = fail.
+        Validator: validate_user_tags raises ValidationError if len > 10.
+        """
+        user, token = self._create_and_login_user()
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+        eleven_tags = [f"Tag{i}" for i in range(11)]
+        response = self.client.patch(self.tags_url, {"user_tags": eleven_tags}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_user_tags_tag_exactly_15_chars_is_accepted(self):
+        """
+        GIVEN  a single tag of exactly 15 characters (boundary maximum)
+        THEN   200 OK.
+        """
+        user, token = self._create_and_login_user()
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+        response = self.client.patch(self.tags_url, {"user_tags": ["A" * 15]}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_user_tags_tag_16_chars_is_rejected(self):
+        """
+        GIVEN  a single tag of 16 characters (one over the per-tag limit)
+        THEN   400 Bad Request.
+
+        Off-by-one boundary test: 15 chars = pass, 16 chars = fail.
+        """
+        user, token = self._create_and_login_user()
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+        response = self.client.patch(self.tags_url, {"user_tags": ["A" * 16]}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_user_tags_plain_string_instead_of_array_rejected(self):
+        """
+        GIVEN  user_tags = 'Non-Smoker' (a plain string, not an array)
+        THEN   400 Bad Request.
+
+        Idiot-proof test: The DB constraint enforces jsonb_typeof = 'array'.
+        The validator also checks isinstance(value, list). A plain string
+        like 'Non-Smoker' would fail both checks.
+        """
+        user, token = self._create_and_login_user()
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+        response = self.client.patch(
+            self.tags_url,
+            {"user_tags": "Non-Smoker"},  # ← wrong type! should be ["Non-Smoker"]
+            format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_user_tags_array_of_integers_rejected(self):
+        """
+        GIVEN  user_tags = [1, 2, 3] (integers inside array, not strings)
+        THEN   400 Bad Request.
+
+        Validator: Each element must be isinstance(tag, str).
+        Integers like 1, 2, 3 must be rejected.
+        """
+        user, token = self._create_and_login_user()
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+        response = self.client.patch(
+            self.tags_url,
+            {"user_tags": [1, 2, 3]},  # ← wrong element type!
+            format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_user_tags_cannot_update_another_users_tags(self):
+        """
+        GIVEN  user A is authenticated
+        WHEN   they PATCH /user-tags/
+        THEN   only user A's tags change — user B's tags are untouched.
+
+        Same security isolation as the user-about test above.
+        get_object() = self.request.user ensures you can only edit yourself.
+        """
+        user_a, token_a = self._create_and_login_user(email="usera@example.com", username="usera")
+        user_b = tbl_user_profile.objects.create_user(
+            username="userb", email="userb@example.com",
+            password="Password123!", contact_number="+639111111111"
+        )
+        original_tags = list(user_b.user_tags)  # save baseline (should be [])
+
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {token_a}")
+        self.client.patch(self.tags_url, {"user_tags": ["Hacked"]}, format="json")
+
+        # User B's tags must remain unchanged
+        user_b.refresh_from_db()
+        self.assertEqual(user_b.user_tags, original_tags)
