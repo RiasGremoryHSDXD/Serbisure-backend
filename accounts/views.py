@@ -162,18 +162,36 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.parsers import MultiPartParser, FormParser
 from .serializers import ProfileImageUploadSerializer
 
+
+class ProfileImageUploadThrottle(UserRateThrottle):
+    scope = 'profile_image_upload'
+    rate = '2/h'
+
 class ProfileImageUploadView(generics.UpdateAPIView):
     permission_classes = [IsAuthenticated]
     parser_classes = (MultiPartParser, FormParser)
     serializer_class = ProfileImageUploadSerializer
+    throttle_classes = [ProfileImageUploadThrottle]
 
     def get_object(self):
         # We automatically return the logged-in user!
         return self.request.user
 
+    def throttled(self, request, wait):        
+    # 3600 seconds = 1 hour
+        if wait > 3600: 
+            time_left = math.ceil(wait / 3600)
+            custom_message = f"Too many attempts. Please try again in {time_left} hours."
+
+        else:
+            custom_message = f"Too many attempts. Please try again in {math.ceil(wait/60)} minutes."
+
+        raise Throttled(detail=custom_message)
+
 
 class UserAboutThrottle(UserRateThrottle):
-    rate = '10/h'
+    scope = 'user_about'
+    rate = '3/h'
 
 class UserAboutView(generics.UpdateAPIView):
     permission_classes = [IsAuthenticated]
@@ -195,7 +213,8 @@ class UserAboutView(generics.UpdateAPIView):
         raise Throttled(detail=custom_message)
 
 class UserTagsThrottle(UserRateThrottle):
-    rate = '10/h'
+    scope = 'user_tags'
+    rate = '3/h'
 
 class UserTagsView(generics.UpdateAPIView):
 
