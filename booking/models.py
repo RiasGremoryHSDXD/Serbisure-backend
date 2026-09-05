@@ -185,3 +185,50 @@ class tbl_booking_assignment(models.Model):
 
     class Meta:
         db_table = 'tbl_booking_assignment'
+
+
+class tbl_booking_proposal(models.Model):
+    PROPOSAL_STATUS_CHOICES = (
+        ('Pending', 'Pending'),
+        ('Accepted', 'Accepted'),
+        ('Rejected', 'Rejected'),
+        ('Withdrawn', 'Withdrawn')
+    )
+
+    proposal_id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    booking_id = models.ForeignKey(
+        'tbl_booking',
+        on_delete=models.CASCADE,
+        related_name='proposals',
+        db_column='booking_id'
+    )
+    proposer_id = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='booking_proposals',
+        limit_choices_to={'account_type__in': ['Homeowner', 'Kasambahay']},
+        db_column='proposer_id'
+    )
+    proposed_rate = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        validators=[
+            MinValueValidator(Decimal('1.00'))
+        ]
+    )
+    message = models.TextField(max_length=500, blank=True, null=True)
+    status = models.CharField(max_length=20, choices=PROPOSAL_STATUS_CHOICES, default='Pending')
+    createdAt = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'tbl_booking_proposal'
+        constraints = [
+            CheckConstraint(
+                condition=Q(status__in=['Pending', 'Accepted', 'Rejected', 'Withdrawn']),
+                name='valid_proposal_status_enum'
+            ),
+            CheckConstraint(
+                condition=Q(proposed_rate__gte=Decimal('1.00')),
+                name='valid_proposal_rate'
+            )
+        ]

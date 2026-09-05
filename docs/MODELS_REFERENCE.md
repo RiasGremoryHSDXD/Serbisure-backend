@@ -93,6 +93,19 @@ This document outlines the database schema, models, field types, and choices (en
 | `accepter_id` | `ForeignKey` | FK -> `tbl_user_profile` |
 | `accepted_at` | `DateTimeField` | Blank=True |
 
+### `tbl_booking_proposal`
+- **Database Table:** `tbl_booking_proposal`
+
+| Field Name | Data Type | Constraints / Choices / FK |
+| --- | --- | --- |
+| `proposal_id` | `UUIDField` | Primary Key, Unique |
+| `booking_id` | `ForeignKey` | FK -> `tbl_booking` |
+| `proposer_id` | `ForeignKey` | FK -> `tbl_user_profile` |
+| `proposed_rate` | `DecimalField` | - |
+| `message` | `TextField` | Null=True, Blank=True |
+| `status` | `CharField` | Choices: ['Pending', 'Accepted', 'Rejected', 'Withdrawn'] |
+| `createdAt` | `DateTimeField` | Blank=True |
+
 ## Reviews App
 
 ### `tbl_review`

@@ -85,6 +85,18 @@ class CreateReviewView(generics.CreateAPIView):
         serializer.is_valid(raise_exception=True)
         review = serializer.save()
 
+        # In-App Notification Trigger (Tier 1-3)
+        try:
+            from notifications.services import send_in_app_notification
+            reviewer_name = f"{request.user.first_name} {request.user.last_name}".strip() or request.user.username
+            send_in_app_notification(
+                receiver=review.reviewee_id,
+                sender=request.user,
+                message=f"{reviewer_name} gave you a {review.rating}-star review: \"{review.unstructured_feedback[:50]}...\""
+            )
+        except Exception:
+            pass
+
         response_data = {
             "message": "Review submitted successfully.",
             "data": ReviewSerializer(review).data
@@ -255,3 +267,73 @@ class UserReviewsView(generics.ListAPIView):
 
     def throttled(self, request, wait):
         raise Throttled(detail=_get_throttle_message(wait))
+
+
+# ─────────────────────────────────────────────
+# GET /api/v1/reviews/analytics/ (Tier 2-5)
+# ─────────────────────────────────────────────
+
+class ReviewAnalyticsView(generics.GenericAPIView):
+    """
+    Returns reputation & performance analytics for the authenticated user (e.g. Kasambahay).
+    Includes total jobs completed, total reviews, average rating, sentiment breakdown,
+    and 5-star to 1-star distribution.
+    """
+    permission_classes = [IsAuthenticated]
+    throttle_classes = [ReviewListThrottle]
+
+    def get(self, request, *args, **kwargs):
+        current_user = request.user
+        reviews = tbl_review.objects.filter(reviewee_id=current_user)
+        total_reviews = reviews.count()
+
+        avg_agg = reviews.aggregate(avg=Avg('rating'))['avg']
+        average_rating = round(float(avg_agg), 2) if avg_agg is not None else 0.0
+
+        sentiment_breakdown = {'Positive': 0, 'Neutral': 0, 'Negative': 0}
+        rating_breakdown = {'5': 0, '4': 0, '3': 0, '2': 0, '1': 0}
+
+        for row in reviews.values('nlp_sentiment', 'rating'):
+            sentiment = row['nlp_sentiment']
+            rating = str(row['rating'])
+            if sentiment in sentiment_breakdown:
+                sentiment_breakdown[sentiment] += 1
+            if rating in rating_breakdown:
+                rating_breakdown[rating] += 1
+
+        positive_count = sentiment_breakdown['Positive']
+        positive_pct = round((positive_count / total_reviews) * 100) if total_reviews > 0 else 100
+
+        # Calculate completed jobs count from assignments and poster bookings
+        from booking.models import tbl_booking, tbl_booking_assignment
+        assigned_completed = tbl_booking_assignment.objects.filter(
+            accepter_id=current_user,
+            booking_id__booking_status='Completed'
+        ).count()
+        posted_completed = tbl_booking.objects.filter(
+            poster_id=current_user,
+            booking_status='Completed'
+        ).count()
+        total_jobs_completed = assigned_completed + posted_completed
+
+        recent_reviews = ReviewSerializer(reviews.select_related('reviewer_id', 'booking_id').order_by('-createdAt')[:5], many=True).data
+
+        return Response({
+            "message": "Review analytics retrieved successfully.",
+            "data": {
+                "user_id": current_user.id,
+                "user_name": f"{current_user.first_name} {current_user.last_name}".strip() or current_user.username,
+                "account_type": current_user.account_type,
+                "total_jobs_completed": total_jobs_completed,
+                "total_reviews": total_reviews,
+                "average_rating": average_rating,
+                "positive_percentage": positive_pct,
+                "sentiment_breakdown": sentiment_breakdown,
+                "rating_breakdown": rating_breakdown,
+                "recent_reviews": recent_reviews,
+            }
+        }, status=status.HTTP_200_OK)
+
+    def throttled(self, request, wait):
+        raise Throttled(detail=_get_throttle_message(wait))
+
