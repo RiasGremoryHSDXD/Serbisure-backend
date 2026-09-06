@@ -6,6 +6,7 @@ from .views import (
     ProfileImageUploadView,
     UserAboutView,
     UserTagsView,
+    ContactPrivacyView,
     PublicProfileView,
     KasambahayResumeView,
     ChangePasswordView,
@@ -31,6 +32,9 @@ urlpatterns = [
 
     # User Tags Endpoints
     path('user-tags/', UserTagsView.as_view(), name='user-tags'),
+
+    # Contact Privacy Endpoint
+    path('contact-privacy/', ContactPrivacyView.as_view(), name='contact-privacy'),
 
     # Public Profile Endpoint
     path('public-profile/<uuid:id>/', PublicProfileView.as_view(), name='public-profile'),

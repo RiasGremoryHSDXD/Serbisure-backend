@@ -7,6 +7,7 @@ from .serializers import (
     CustomLoginSerializer,
     UserAboutSerializer,
     UserTagsSerializer,
+    ContactPrivacySerializer,
     PublicProfileSerializer,
     KasambahayResumeSerializer,
 )
@@ -228,9 +229,9 @@ class UserAboutView(generics.RetrieveUpdateAPIView):
 
 class UserTagsThrottle(UserRateThrottle):
     scope = 'user_tags'
-    rate = '3/h'
+    rate = '60/h'
 
-class UserTagsView(generics.UpdateAPIView):
+class UserTagsView(generics.RetrieveUpdateAPIView):
 
     permission_classes = [IsAuthenticated]
     serializer_class = UserTagsSerializer
@@ -249,6 +250,18 @@ class UserTagsView(generics.UpdateAPIView):
             custom_message = f"Too many attempts. Please try again in {math.ceil(wait/60)} minutes."
 
         raise Throttled(detail=custom_message)
+
+
+class ContactPrivacyView(generics.RetrieveUpdateAPIView):
+    """
+    Get or update contact number visibility for the authenticated user.
+    GET/PATCH /api/v1/accounts/contact-privacy/
+    """
+    permission_classes = [IsAuthenticated]
+    serializer_class = ContactPrivacySerializer
+
+    def get_object(self):
+        return self.request.user
 
 
 class PublicProfileView(generics.RetrieveAPIView):

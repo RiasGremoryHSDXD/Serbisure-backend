@@ -36,6 +36,7 @@ This document outlines the database schema, models, field types, and choices (en
 | `resume_uploaded_at` | `DateTimeField` | Null=True, Blank=True |
 | `account_type` | `CharField` | Choices: ['Kasambahay', 'Homeowner', 'Barangay', 'Admin'] |
 | `contact_number` | `CharField` | - |
+| `show_contact_number` | `BooleanField` | - |
 | `user_about` | `TextField` | Blank=True |
 | `user_tags` | `JSONField` | Blank=True |
 

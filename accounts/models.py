@@ -302,6 +302,11 @@ class tbl_user_profile(AbstractUser):
             help_text="User's contact phone number (e.g. +639123456789)"
         )
 
+    show_contact_number = models.BooleanField(
+        default=False,
+        help_text="Controls if contact number is visible to other users on public profile"
+    )
+
     user_about = models.TextField(
         max_length=500,
         blank=True,

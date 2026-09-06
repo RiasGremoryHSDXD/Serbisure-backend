@@ -149,6 +149,10 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
         token['account_type'] = user.account_type
         token['verification_status'] = user.verification_status
         token['language'] = user.language
+        token['email'] = user.email
+        token['contact_number'] = user.contact_number
+        token['show_contact_number'] = getattr(user, 'show_contact_number', True)
+        token['user_tags'] = user.user_tags or []
 
         public_id = user.profile_link
 
@@ -181,6 +185,10 @@ class CustomLoginSerializer(TokenObtainPairSerializer):
         token['account_type'] = user.account_type
         token['verification_status'] = user.verification_status
         token['language'] = user.language
+        token['email'] = user.email
+        token['contact_number'] = user.contact_number
+        token['show_contact_number'] = getattr(user, 'show_contact_number', True)
+        token['user_tags'] = user.user_tags or []
 
         public_id = user.profile_link
 
@@ -269,6 +277,13 @@ class UserTagsSerializer(serializers.ModelSerializer):
     class Meta:
         model = tbl_user_profile
         fields = ['user_tags']
+
+
+class ContactPrivacySerializer(serializers.ModelSerializer):
+
+    class Meta:
+        model = tbl_user_profile
+        fields = ['show_contact_number']
 
 
 class KasambahayResumeSerializer(serializers.ModelSerializer):
@@ -375,6 +390,15 @@ class PublicProfileSerializer(serializers.ModelSerializer):
             'date_joined',
         ]
         read_only_fields = fields
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        if getattr(instance, 'show_contact_number', False):
+            data['contact_number'] = instance.contact_number
+            data['show_contact_number'] = True
+        else:
+            data['show_contact_number'] = False
+        return data
 
     def get_full_name(self, obj):
         parts = [obj.first_name, obj.middle_name, obj.last_name]
