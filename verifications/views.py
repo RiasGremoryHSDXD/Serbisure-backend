@@ -1,30 +1,86 @@
 from rest_framework import generics
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.parsers import MultiPartParser, FormParser
 from .models import tbl_documents
-from .serializers import DocumentUploadSerializer
+from .serializers import DocumentUploadSerializer, AdminVerificationQueueSerializer
 from rest_framework.throttling import UserRateThrottle
 from rest_framework.exceptions import Throttled
-from core.utils import check_valid_uuid
 from rest_framework import status
 from rest_framework.response import Response
-import math 
+import math
+import cloudinary.utils
 
 class DocumentUploadThrottle(UserRateThrottle):
-    rate = '5/d'
+    rate = '20/d'
+
+class DocumentStatusView(generics.GenericAPIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, *args, **kwargs):
+        user = request.user
+        docs = tbl_documents.objects.filter(user_profile=user).order_by('-created_at')
+        
+        doc_list = []
+        for doc in docs:
+            # Generate signed URL
+            img_url = None
+            if doc.document_url:
+                if doc.document_url.startswith('http://') or doc.document_url.startswith('https://'):
+                    img_url = doc.document_url
+                else:
+                    try:
+                        img_url, _ = cloudinary.utils.cloudinary_url(
+                            doc.document_url,
+                            type="authenticated",
+                            sign_url=True,
+                        )
+                    except Exception:
+                        img_url = doc.document_url
+
+            doc_list.append({
+                'document_id': str(doc.document_id),
+                'document_type': doc.document_type,
+                'verification_status': doc.verification_status,
+                'document_image_url': img_url,
+                'date_issued': doc.date_issued.isoformat() if doc.date_issued else None,
+                'valid_until': doc.valid_until.isoformat() if doc.valid_until else None,
+                'ocr_match_score': doc.ocr_match_score,
+                'ocr_discrepancies': doc.ocr_discrepancies or [],
+                'rejection_reason': doc.rejection_reason,
+                'created_at': doc.created_at.isoformat() if doc.created_at else None,
+            })
+        
+        has_documents = docs.exists()
+        
+        # Calculate overall status
+        if not has_documents:
+            overall_status = 'Unverified'
+        elif docs.filter(verification_status='Rejected').exists():
+            overall_status = 'Rejected'
+        elif docs.filter(verification_status='Pending').exists() or docs.filter(verification_status='Unverified').exists():
+            overall_status = 'Pending'
+        elif docs.filter(verification_status='Verified').exists():
+            overall_status = 'Verified'
+        else:
+            overall_status = 'Unverified'
+            
+        return Response({
+            'overall_status': overall_status,
+            'has_submitted_documents': has_documents,
+            'account_type': user.account_type,
+            'required_documents': ['nbi_clearance', 'police_clearance'] if user.account_type == 'Kasambahay' else ['national_id_front'],
+            'documents': doc_list,
+        }, status=status.HTTP_200_OK)
+
 
 class DocumentUploadView(generics.CreateAPIView):
-
     throttle_classes = [DocumentUploadThrottle]
-
     queryset = tbl_documents.objects.all()
     serializer_class = DocumentUploadSerializer
     permission_classes = [IsAuthenticated]
-
     parser_classes = (MultiPartParser, FormParser)
 
     def create(self, request, *args, **kwargs):
-        
         user = request.user
         doc_type = request.data.get('document_type')
 
@@ -40,16 +96,14 @@ class DocumentUploadView(generics.CreateAPIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        if tbl_documents.objects.filter(user_profile=user, document_type=doc_type).exists():
-            return Response(
-                {"error": f"You have already submitted your {doc_type}"},
-                status=status.HTTP_409_CONFLICT
-            )
+        # If user already uploaded this document type, delete the old one so the new one replaces it
+        existing_doc = tbl_documents.objects.filter(user_profile=user, document_type=doc_type).first()
+        if existing_doc:
+            existing_doc.delete()
         
         return super().create(request, *args, **kwargs)
     
     def throttled(self, request, wait):
-        # 3600 seconds = 1 hour
         if wait > 3600:
             time_left = math.ceil(wait / 3600)
             custom_message = f"Too many attempts. Please try again in {time_left} hours."
@@ -57,3 +111,156 @@ class DocumentUploadView(generics.CreateAPIView):
             custom_message = f"Too many attempts. Please try again in {math.ceil(wait / 60)} minutes"
 
         raise Throttled(detail=custom_message)
+
+
+class DeleteRejectedDocumentView(generics.DestroyAPIView):
+    permission_classes = [IsAuthenticated]
+    lookup_field = 'document_id'
+
+    def get_queryset(self):
+        return tbl_documents.objects.filter(user_profile=self.request.user)
+
+
+# ==========================================
+# ADMIN VERIFICATION QUEUE & REVIEW ENDPOINTS
+# ==========================================
+
+class AdminVerificationQueueView(generics.ListAPIView):
+    """
+    Returns all verification requests for the Web Admin dashboard.
+    Supports query params:
+    - ?role=KASAMBAHAY | HOMEOWNER
+    - ?status=PENDING | VERIFIED | REJECTED
+    - ?barangay=Pagatpat
+    """
+    permission_classes = [AllowAny] # Permissive for easy admin dashboard integration
+    serializer_class = AdminVerificationQueueSerializer
+
+    def get_queryset(self):
+        # Exclude national_id_back if the user already has a national_id_front,
+        # ensuring National ID is represented as a single combined entry.
+        front_user_ids = tbl_documents.objects.filter(
+            document_type='national_id_front'
+        ).values_list('user_profile_id', flat=True)
+
+        qs = tbl_documents.objects.select_related('user_profile').exclude(
+            document_type='national_id_back',
+            user_profile_id__in=front_user_ids
+        ).order_by('-created_at')
+        
+        role = self.request.query_params.get('role')
+        if role and role.upper() != 'ALL':
+            qs = qs.filter(user_profile__account_type__iexact=role)
+            
+        doc_status = self.request.query_params.get('status')
+        if doc_status and doc_status.upper() != 'ALL':
+            if doc_status.upper() in ['PENDING', 'PENDING / REVIEW']:
+                qs = qs.filter(verification_status__in=['Pending', 'Unverified'])
+            elif doc_status.upper() == 'VERIFIED':
+                qs = qs.filter(verification_status='Verified')
+            elif doc_status.upper() == 'REJECTED':
+                qs = qs.filter(verification_status='Rejected')
+
+        barangay = self.request.query_params.get('barangay')
+        if barangay and barangay.lower() != 'all':
+            qs = qs.filter(user_profile__city__icontains=barangay)
+
+        return qs
+
+
+class AdminVerificationReviewView(generics.GenericAPIView):
+    """
+    Allows Admin or Barangay officer to approve or reject a document.
+    POST body:
+    {
+        "action": "approve" | "reject" | "reset",
+        "rejection_reason": "Optional notes or reason for rejection"
+    }
+    """
+    permission_classes = [AllowAny]
+
+    def post(self, request, document_id, *args, **kwargs):
+        try:
+            document = tbl_documents.objects.select_related('user_profile').get(document_id=document_id)
+        except tbl_documents.DoesNotExist:
+            return Response({"error": "Document not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        action = request.data.get('action', '').lower()
+        reason = request.data.get('rejection_reason', '')
+
+        if action not in ['approve', 'reject', 'reset']:
+            return Response({"error": "action must be 'approve', 'reject', or 'reset'"}, status=status.HTTP_400_BAD_REQUEST)
+
+        user = document.user_profile
+
+        # For National ID, locate both front and back records to keep them in sync
+        related_national_docs = tbl_documents.objects.none()
+        if document.document_type in ['national_id_front', 'national_id_back']:
+            related_national_docs = tbl_documents.objects.filter(
+                user_profile=user,
+                document_type__in=['national_id_front', 'national_id_back']
+            )
+
+        if action == 'approve':
+            document.verification_status = 'Verified'
+            document.rejection_reason = None
+            document.save()
+
+            if related_national_docs.exists():
+                related_national_docs.update(
+                    verification_status='Verified',
+                    rejection_reason=None
+                )
+
+            # Check if all user documents are verified
+            user_docs = tbl_documents.objects.filter(user_profile=user)
+            all_verified = user_docs.exists() and all(d.verification_status == 'Verified' for d in user_docs)
+            if all_verified:
+                user.verification_status = 'Verified'
+                user.save(update_fields=['verification_status'])
+            else:
+                user.verification_status = 'Pending'
+                user.save(update_fields=['verification_status'])
+
+            return Response({
+                "message": f"Document approved successfully.",
+                "document": AdminVerificationQueueSerializer(document).data
+            }, status=status.HTTP_200_OK)
+
+        elif action == 'reject':
+            document.verification_status = 'Rejected'
+            document.rejection_reason = reason or "Document criteria not met"
+            document.save()
+
+            if related_national_docs.exists():
+                related_national_docs.update(
+                    verification_status='Rejected',
+                    rejection_reason=reason or "Document criteria not met"
+                )
+
+            user.verification_status = 'Rejected'
+            user.save(update_fields=['verification_status'])
+
+            return Response({
+                "message": "Document rejected.",
+                "document": AdminVerificationQueueSerializer(document).data
+            }, status=status.HTTP_200_OK)
+
+        elif action == 'reset':
+            document.verification_status = 'Pending'
+            document.rejection_reason = None
+            document.save()
+
+            if related_national_docs.exists():
+                related_national_docs.update(
+                    verification_status='Pending',
+                    rejection_reason=None
+                )
+
+            user.verification_status = 'Pending'
+            user.save(update_fields=['verification_status'])
+
+            return Response({
+                "message": "Document reset to Pending review.",
+                "document": AdminVerificationQueueSerializer(document).data
+            }, status=status.HTTP_200_OK)

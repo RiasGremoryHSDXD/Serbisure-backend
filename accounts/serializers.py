@@ -127,6 +127,13 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
         return value.lower()
 
     def validate_contact_number(self, value):
+        if isinstance(value, str):
+            value = value.strip()
+            if value.startswith('09') and len(value) == 11:
+                value = '+63' + value[1:]
+            elif value.startswith('63') and len(value) == 12:
+                value = '+' + value
+
         if not value.startswith('+63'):
             raise serializers.ValidationError("Contact number must strictly start with +63.")
         

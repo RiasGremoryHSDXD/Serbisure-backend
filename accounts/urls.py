@@ -1,10 +1,13 @@
 from django.urls import path
 from rest_framework_simplejwt.views import TokenRefreshView
-from .views import UserRegistrationView, CustomLoginView, ProfileImageUploadView
-
+from .views import (
+    UserRegistrationView, 
+    CustomLoginView, 
+    ProfileImageUploadView,
+    AdminUserListView
+)
 
 urlpatterns = [
-
     # Registration Endpoints
     path('register/', UserRegistrationView.as_view(), name='register'),
     
@@ -15,5 +18,8 @@ urlpatterns = [
     path('profile-image/', ProfileImageUploadView.as_view(), name='profile-image'),
 
     # Refresh Endpoints (Used when the access token expires to get a new one)
-    path('token/refresh/', TokenRefreshView.as_view(), name='token_refresh')
+    path('token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
+
+    # Admin Endpoints
+    path('admin/users/', AdminUserListView.as_view(), name='admin-users'),
 ]

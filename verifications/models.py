@@ -69,8 +69,57 @@ class tbl_documents(models.Model):
     verification_status = models.CharField(
         max_length=20,
         choices=VERIFICATION_STATUS_CHOICES,
-        default='Unverified'
+        default='Pending'
     )
+
+    document_number = models.CharField(
+        max_length=100,
+        blank=True,
+        null=True
+    )
+
+    ocr_raw_text = models.TextField(
+        blank=True,
+        null=True
+    )
+
+    extracted_data = models.JSONField(
+        default=dict,
+        blank=True
+    )
+
+    ocr_match_score = models.FloatField(
+        blank=True,
+        null=True
+    )
+
+    ocr_discrepancies = models.JSONField(
+        default=list,
+        blank=True
+    )
+
+    ocr_processed_at = models.DateTimeField(
+        blank=True,
+        null=True
+    )
+
+    rejection_reason = models.TextField(
+        blank=True,
+        null=True
+    )
+
+    face_liveness_score = models.FloatField(
+        blank=True,
+        null=True
+    )
+
+    @property
+    def ocr_extracted_data(self):
+        return self.extracted_data
+
+    @ocr_extracted_data.setter
+    def ocr_extracted_data(self, value):
+        self.extracted_data = value
 
     created_at = models.DateTimeField(
         auto_now_add=True
