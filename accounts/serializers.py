@@ -189,6 +189,11 @@ class CustomLoginSerializer(TokenObtainPairSerializer):
         token['contact_number'] = user.contact_number
         token['show_contact_number'] = getattr(user, 'show_contact_number', True)
         token['user_tags'] = user.user_tags or []
+        token['street'] = user.street or ''
+        token['city'] = user.city or ''
+        token['province'] = user.province or ''
+        token['zipcode'] = user.zipcode or ''
+        token['country'] = user.country or 'Philippines'
 
         public_id = user.profile_link
 
