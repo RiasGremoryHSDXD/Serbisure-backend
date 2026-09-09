@@ -91,8 +91,40 @@ class UserVerificationStatusView(generics.GenericAPIView):
 
     def get(self, request):
         from .serializers_admin import UserDocumentStatusSerializer
+        from .services.document_processor import process_document_async
+        from datetime import timedelta
+        from django.utils import timezone
+        import logging
+        logger = logging.getLogger(__name__)
+
         user = request.user
         documents = tbl_documents.objects.filter(user_profile=user).order_by('-created_at')
+
+        # Lazy retry: find stuck documents submitted > 30s ago that haven't finished OCR
+        # or where previous extraction produced empty results ({})
+        stuck_threshold = timezone.now() - timedelta(seconds=30)
+        stuck_docs = [
+            doc for doc in documents
+            if doc.verification_status == 'Pending'
+            and doc.ocr_retry_count < 3
+            and doc.created_at <= stuck_threshold
+            and (
+                doc.ocr_processed_at is None
+                or not doc.extracted_data
+                or doc.extracted_data == {}
+                or not (doc.ocr_raw_text and doc.ocr_raw_text.strip())
+            )
+        ]
+
+        for doc in stuck_docs:
+            logger.info(
+                f"[LazyRetry] Retrying OCR for stuck document {doc.document_id} "
+                f"({doc.document_type}), attempt {doc.ocr_retry_count + 1}/3"
+            )
+            doc.ocr_retry_count += 1
+            doc.save(update_fields=['ocr_retry_count'])
+            process_document_async(str(doc.document_id))
+
         serialized_docs = UserDocumentStatusSerializer(documents, many=True).data
 
         # Determine required document types depending on account type
@@ -107,6 +139,12 @@ class UserVerificationStatusView(generics.GenericAPIView):
             "account_type": user.account_type,
             "overall_status": user.verification_status,
             "required_documents": required_docs,
+            "user_info": {
+                "first_name": user.first_name,
+                "middle_name": user.middle_name,
+                "last_name": user.last_name,
+                "date_of_birth": str(user.date_of_birth) if user.date_of_birth else None,
+            },
             "documents": serialized_docs,
         }, status=status.HTTP_200_OK)
 

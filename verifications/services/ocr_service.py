@@ -5,7 +5,10 @@ import logging
 from io import BytesIO
 import requests
 from PIL import Image, ImageEnhance, ImageFilter
-import pytesseract
+try:
+    import pytesseract
+except ImportError:
+    pytesseract = None
 import cloudinary.utils
 
 logger = logging.getLogger(__name__)
@@ -94,6 +97,8 @@ def extract_text_with_google_vision(image_bytes: bytes) -> str:
 
 def configure_tesseract():
     """Configure tesseract command path if not already in system PATH."""
+    if pytesseract is None:
+        return False
     custom_cmd = os.getenv("TESSERACT_CMD")
     if custom_cmd and os.path.exists(custom_cmd):
         pytesseract.pytesseract.tesseract_cmd = custom_cmd
