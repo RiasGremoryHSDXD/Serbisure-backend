@@ -62,6 +62,8 @@ This document outlines the database schema, models, field types, and choices (en
 | `ocr_processed_at` | `DateTimeField` | Null=True, Blank=True |
 | `ocr_retry_count` | `PositiveSmallIntegerField` | - |
 | `rejection_reason` | `TextField` | Null=True, Blank=True |
+| `document_number` | `CharField` | Null=True, Blank=True |
+| `face_liveness_score` | `FloatField` | Null=True, Blank=True |
 | `created_at` | `DateTimeField` | Blank=True |
 
 ## Booking App

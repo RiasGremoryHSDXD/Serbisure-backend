@@ -12,7 +12,7 @@ from .serializers import (
     KasambahayResumeSerializer,
 )
 from .permissions import IsKasambahay
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework_simplejwt.views import TokenObtainPairView
 from rest_framework.throttling import AnonRateThrottle, UserRateThrottle
 from rest_framework.exceptions import Throttled
@@ -172,6 +172,66 @@ from rest_framework import generics
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.parsers import MultiPartParser, FormParser
 from .serializers import ProfileImageUploadSerializer
+
+
+class AdminUserListView(generics.ListAPIView):
+    """
+    Returns registered users formatted for the Admin User Directory dashboard.
+    """
+    permission_classes = [AllowAny]
+
+    def get(self, request, *args, **kwargs):
+        role_param = request.query_params.get('role')
+        users_qs = tbl_user_profile.objects.exclude(account_type='Admin').order_by('-date_joined')
+
+        if role_param and role_param.upper() != 'ALL':
+            users_qs = users_qs.filter(account_type__iexact=role_param)
+
+        data = []
+        for u in users_qs:
+            full_name = f"{u.first_name} {u.last_name}".strip() or u.username
+            role_norm = u.account_type.upper() if u.account_type else 'HOMEOWNER'
+            if role_norm not in ['HOMEOWNER', 'KASAMBAHAY']:
+                role_norm = 'HOMEOWNER'
+
+            avatar = u.profile_link or f"https://ui-avatars.com/api/?name={u.first_name}+{u.last_name}&background=F5A623&color=fff"
+            if u.profile_link and not (u.profile_link.startswith('http://') or u.profile_link.startswith('https://')):
+                try:
+                    import cloudinary.utils
+                    temp_url, _ = cloudinary.utils.cloudinary_url(
+                        u.profile_link,
+                        type="authenticated",
+                        sign_url=True,
+                    )
+                    avatar = temp_url
+                except Exception:
+                    pass
+            is_verified = u.verification_status == 'Verified'
+
+            user_item = {
+                "id": str(u.id),
+                "name": full_name,
+                "role": role_norm,
+                "avatar": avatar,
+                "email": u.email,
+                "contactNumber": u.contact_number or "+639123456789",
+                "address": f"{u.street or ''}, {u.city or 'Cagayan de Oro City'}".strip(', '),
+                "barangay": u.city or "Pagatpat",
+                "city": u.city or "Cagayan de Oro City",
+                "verified": is_verified,
+                "status": "ACTIVE" if u.is_active else "SUSPENDED",
+                "joinedDate": u.date_joined.strftime('%b %d, %Y') if u.date_joined else "Recent",
+                "completedJobs": 0,
+                "sentimentScore": {
+                    "positive": 95,
+                    "neutral": 5,
+                    "negative": 0
+                },
+                "ra10361Compliant": True,
+            }
+            data.append(user_item)
+
+        return Response(data, status=status.HTTP_200_OK)
 
 
 class ProfileImageUploadThrottle(UserRateThrottle):
@@ -499,7 +559,3 @@ class ExportUserDataView(APIView):
         }
 
         return Response({'user_data': data}, status=status.HTTP_200_OK)
-
-
-
-

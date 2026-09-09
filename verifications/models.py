@@ -75,6 +75,7 @@ class tbl_documents(models.Model):
     extracted_data = models.JSONField(
         blank=True,
         null=True,
+        default=dict,
         help_text="Structured data extracted by Groq AI from OCR text"
     )
 
@@ -112,6 +113,26 @@ class tbl_documents(models.Model):
         null=True,
         help_text="Reason for document rejection by Admin/Barangay"
     )
+
+    document_number = models.CharField(
+        max_length=100,
+        blank=True,
+        null=True
+    )
+
+    face_liveness_score = models.FloatField(
+        blank=True,
+        null=True
+    )
+
+    @property
+    def ocr_extracted_data(self):
+        return self.extracted_data
+
+    @ocr_extracted_data.setter
+    def ocr_extracted_data(self, value):
+        self.extracted_data = value
+
 
     created_at = models.DateTimeField(
         auto_now_add=True
