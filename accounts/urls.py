@@ -13,11 +13,10 @@ from .views import (
     UserSearchView,
     DeleteAccountView,
     ExportUserDataView,
+    AdminUserListView,
 )
 
-
 urlpatterns = [
-
     # Registration Endpoints
     path('register/', UserRegistrationView.as_view(), name='register'),
     
@@ -55,5 +54,8 @@ urlpatterns = [
     path('change-password/', ChangePasswordView.as_view(), name='change-password'),
 
     # Refresh Endpoints (Used when the access token expires to get a new one)
-    path('token/refresh/', TokenRefreshView.as_view(), name='token_refresh')
+    path('token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
+
+    # Admin Endpoints
+    path('admin/users/', AdminUserListView.as_view(), name='admin-users'),
 ]

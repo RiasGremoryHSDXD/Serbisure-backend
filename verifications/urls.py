@@ -3,6 +3,8 @@ from .views import (
     DocumentUploadView,
     UserVerificationStatusView,
     UserDeleteRejectedDocumentView,
+    AdminVerificationQueueView,
+    AdminVerificationReviewView,
 )
 from .views_admin import (
     AdminDocumentListView,
@@ -16,6 +18,10 @@ urlpatterns = [
     path('upload/', DocumentUploadView.as_view(), name='document-upload'),
     path('status/', UserVerificationStatusView.as_view(), name='document-status'),
     path('documents/<uuid:document_id>/', UserDeleteRejectedDocumentView.as_view(), name='document-delete-rejected'),
+
+    # Admin Web Dashboard Endpoints
+    path('admin/queue/', AdminVerificationQueueView.as_view(), name='admin-verification-queue'),
+    path('admin/review/<uuid:document_id>/', AdminVerificationReviewView.as_view(), name='admin-verification-review'),
 
     # Admin / Barangay review endpoints
     path('admin/documents/', AdminDocumentListView.as_view(), name='admin-document-list'),
