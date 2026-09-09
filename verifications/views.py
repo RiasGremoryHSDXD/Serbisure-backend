@@ -214,8 +214,12 @@ class AdminVerificationQueueView(generics.ListAPIView):
                 qs = qs.filter(verification_status='Rejected')
 
         barangay = self.request.query_params.get('barangay')
-        if barangay and barangay.lower() != 'all':
-            qs = qs.filter(user_profile__city__icontains=barangay)
+        if barangay and barangay.lower() not in ['all', 'all barangays']:
+            from django.db.models import Q
+            qs = qs.filter(
+                Q(user_profile__city__icontains=barangay) |
+                Q(user_profile__street__icontains=barangay)
+            )
 
         return qs
 

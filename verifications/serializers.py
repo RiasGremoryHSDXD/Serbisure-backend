@@ -355,7 +355,14 @@ class AdminVerificationQueueSerializer(serializers.ModelSerializer):
 
     def get_barangay(self, obj):
         u = obj.user_profile
-        return getattr(u, 'city', None) or getattr(u, 'province', None) or 'Pagatpat'
+        street = getattr(u, 'street', '') or ''
+        city = getattr(u, 'city', '') or ''
+        for b in ['Pagatpat', 'Canitoan']:
+            if b.lower() in street.lower() or b.lower() in city.lower():
+                return b
+        if city and city not in ['Cagayan de Oro City', 'City of Cagayan De Oro', 'Cagayan de Oro']:
+            return city
+        return 'Pagatpat'
 
     def get_contactNumber(self, obj):
         return getattr(obj.user_profile, 'contact_number', '') or '+639171234567'

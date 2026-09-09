@@ -182,10 +182,18 @@ class AdminUserListView(generics.ListAPIView):
 
     def get(self, request, *args, **kwargs):
         role_param = request.query_params.get('role')
-        users_qs = tbl_user_profile.objects.exclude(account_type='Admin').order_by('-date_joined')
+        barangay_param = request.query_params.get('barangay')
+        users_qs = tbl_user_profile.objects.filter(account_type__in=['Homeowner', 'Kasambahay']).order_by('-date_joined')
 
         if role_param and role_param.upper() != 'ALL':
             users_qs = users_qs.filter(account_type__iexact=role_param)
+
+        if barangay_param and barangay_param.upper() not in ['ALL', 'ALL BARANGAYS']:
+            from django.db.models import Q
+            users_qs = users_qs.filter(
+                Q(city__icontains=barangay_param) |
+                Q(street__icontains=barangay_param)
+            )
 
         data = []
         for u in users_qs:
@@ -208,6 +216,14 @@ class AdminUserListView(generics.ListAPIView):
                     pass
             is_verified = u.verification_status == 'Verified'
 
+            brgy = 'Pagatpat'
+            street_lower = (u.street or '').lower()
+            city_lower = (u.city or '').lower()
+            for b in ['Pagatpat', 'Canitoan']:
+                if b.lower() in street_lower or b.lower() in city_lower:
+                    brgy = b
+                    break
+
             user_item = {
                 "id": str(u.id),
                 "name": full_name,
@@ -216,7 +232,7 @@ class AdminUserListView(generics.ListAPIView):
                 "email": u.email,
                 "contactNumber": u.contact_number or "+639123456789",
                 "address": f"{u.street or ''}, {u.city or 'Cagayan de Oro City'}".strip(', '),
-                "barangay": u.city or "Pagatpat",
+                "barangay": brgy,
                 "city": u.city or "Cagayan de Oro City",
                 "verified": is_verified,
                 "status": "ACTIVE" if u.is_active else "SUSPENDED",
