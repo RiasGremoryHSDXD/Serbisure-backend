@@ -252,3 +252,105 @@ class BookingFeedFilterTests(APITestCase):
         self.assertEqual(float(res.data[0]['daily_rate']), 500.00)
         self.assertEqual(float(res.data[1]['daily_rate']), 1200.00)
 
+
+class BookingLifecycleAndProposalTests(APITestCase):
+    def setUp(self):
+        now = timezone.now()
+        self.homeowner = User.objects.create_user(
+            email='lifecycle_h@test.com',
+            password='TestPassword123!',
+            username='lifecycle_h',
+            first_name='Maria',
+            last_name='Clara',
+            account_type='Homeowner',
+            verification_status='Verified',
+            city='Cagayan de Oro'
+        )
+
+        self.kasambahay = User.objects.create_user(
+            email='lifecycle_k@test.com',
+            password='TestPassword123!',
+            username='lifecycle_k',
+            first_name='Juana',
+            last_name='Dela Cruz',
+            account_type='Kasambahay',
+            verification_status='Verified',
+            city='Cagayan de Oro',
+            user_tags=['Cleaning', 'Cooking']
+        )
+
+        self.booking = tbl_booking.objects.create(
+            poster_id=self.homeowner,
+            booking_type='short_term',
+            booking_status='Pending',
+            service_category=['Cleaning'],
+            start_time=now + datetime.timedelta(days=1),
+            service_address='Barangay Carmen, Cagayan de Oro',
+            daily_rate=500.00
+        )
+
+    def tearDown(self):
+        cache.clear()
+
+    def test_accept_booking(self):
+        self.client.force_authenticate(user=self.kasambahay)
+        url = reverse('booking-accept', kwargs={'booking_id': self.booking.booking_id})
+        res = self.client.patch(url)
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.booking.refresh_from_db()
+        self.assertEqual(self.booking.booking_status, 'Accepted')
+        self.assertEqual(self.booking.assignments.first().accepter_id, self.kasambahay)
+
+    def test_start_and_complete_booking(self):
+        self.client.force_authenticate(user=self.kasambahay)
+        # 1. Accept
+        self.client.patch(reverse('booking-accept', kwargs={'booking_id': self.booking.booking_id}))
+        # 2. Start
+        start_res = self.client.patch(reverse('booking-start', kwargs={'booking_id': self.booking.booking_id}))
+        self.assertEqual(start_res.status_code, status.HTTP_200_OK)
+        self.booking.refresh_from_db()
+        self.assertEqual(self.booking.booking_status, 'InProgress')
+        # 3. Complete
+        complete_res = self.client.patch(reverse('booking-complete', kwargs={'booking_id': self.booking.booking_id}))
+        self.assertEqual(complete_res.status_code, status.HTTP_200_OK)
+        self.booking.refresh_from_db()
+        self.assertEqual(self.booking.booking_status, 'Completed')
+
+    def test_cancel_booking(self):
+        self.client.force_authenticate(user=self.homeowner)
+        url = reverse('booking-cancel', kwargs={'booking_id': self.booking.booking_id})
+        res = self.client.patch(url)
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.booking.refresh_from_db()
+        self.assertEqual(self.booking.booking_status, 'Cancelled')
+
+    def test_my_bookings_list(self):
+        self.client.force_authenticate(user=self.homeowner)
+        res = self.client.get(reverse('booking-mine'))
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(res.data), 1)
+
+    def test_proposal_flow(self):
+        self.client.force_authenticate(user=self.kasambahay)
+        # 1. Submit proposal
+        prop_url = reverse('booking-proposals-create', kwargs={'booking_id': self.booking.booking_id})
+        res = self.client.post(prop_url, {'proposed_rate': '650.00', 'message': 'Can I request 650 for travel?'}, format='json')
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        prop_id = res.data['proposal']['proposal_id']
+
+        # 2. Homeowner responds & accepts
+        self.client.force_authenticate(user=self.homeowner)
+        respond_url = reverse('booking-proposals-respond', kwargs={'proposal_id': prop_id})
+        resp = self.client.patch(respond_url, {'action': 'accept'}, format='json')
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.booking.refresh_from_db()
+        self.assertEqual(self.booking.booking_status, 'Accepted')
+        self.assertEqual(float(self.booking.daily_rate), 650.00)
+
+    def test_recommendations(self):
+        self.client.force_authenticate(user=self.kasambahay)
+        res = self.client.get(reverse('booking-recommendations'))
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertIn('recommendations', res.data)
+
+

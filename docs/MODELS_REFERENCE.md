@@ -36,6 +36,7 @@ This document outlines the database schema, models, field types, and choices (en
 | `resume_uploaded_at` | `DateTimeField` | Null=True, Blank=True |
 | `account_type` | `CharField` | Choices: ['Kasambahay', 'Homeowner', 'Barangay', 'Admin'] |
 | `contact_number` | `CharField` | - |
+| `show_contact_number` | `BooleanField` | - |
 | `user_about` | `TextField` | Blank=True |
 | `user_tags` | `JSONField` | Blank=True |
 
@@ -92,6 +93,19 @@ This document outlines the database schema, models, field types, and choices (en
 | `booking_id` | `ForeignKey` | FK -> `tbl_booking` |
 | `accepter_id` | `ForeignKey` | FK -> `tbl_user_profile` |
 | `accepted_at` | `DateTimeField` | Blank=True |
+
+### `tbl_booking_proposal`
+- **Database Table:** `tbl_booking_proposal`
+
+| Field Name | Data Type | Constraints / Choices / FK |
+| --- | --- | --- |
+| `proposal_id` | `UUIDField` | Primary Key, Unique |
+| `booking_id` | `ForeignKey` | FK -> `tbl_booking` |
+| `proposer_id` | `ForeignKey` | FK -> `tbl_user_profile` |
+| `proposed_rate` | `DecimalField` | - |
+| `message` | `TextField` | Null=True, Blank=True |
+| `status` | `CharField` | Choices: ['Pending', 'Accepted', 'Rejected', 'Withdrawn'] |
+| `createdAt` | `DateTimeField` | Blank=True |
 
 ## Reviews App
 

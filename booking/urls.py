@@ -1,7 +1,32 @@
 from django.urls import path
-from .views import BookingView, BookingFeedView
+from .views import (
+    BookingView,
+    BookingFeedView,
+    BookingDetailView,
+    BookingAcceptView,
+    BookingStartView,
+    BookingCompleteView,
+    BookingCancelView,
+    MyBookingsView,
+    MyAssignedBookingsView,
+    BookingProposalCreateView,
+    BookingProposalListView,
+    BookingProposalRespondView,
+    BookingRecommendationsView,
+)
 
 urlpatterns = [
     path('post/', BookingView.as_view(), name='booking-post'),
-    path('feed/', BookingFeedView.as_view(), name='booking-feed')
+    path('feed/', BookingFeedView.as_view(), name='booking-feed'),
+    path('mine/', MyBookingsView.as_view(), name='booking-mine'),
+    path('assigned/', MyAssignedBookingsView.as_view(), name='booking-assigned'),
+    path('recommendations/', BookingRecommendationsView.as_view(), name='booking-recommendations'),
+    path('<uuid:booking_id>/', BookingDetailView.as_view(), name='booking-detail'),
+    path('<uuid:booking_id>/accept/', BookingAcceptView.as_view(), name='booking-accept'),
+    path('<uuid:booking_id>/start/', BookingStartView.as_view(), name='booking-start'),
+    path('<uuid:booking_id>/complete/', BookingCompleteView.as_view(), name='booking-complete'),
+    path('<uuid:booking_id>/cancel/', BookingCancelView.as_view(), name='booking-cancel'),
+    path('<uuid:booking_id>/proposals/', BookingProposalCreateView.as_view(), name='booking-proposals-create'),
+    path('<uuid:booking_id>/proposals/list/', BookingProposalListView.as_view(), name='booking-proposals-list'),
+    path('proposals/<uuid:proposal_id>/respond/', BookingProposalRespondView.as_view(), name='booking-proposals-respond'),
 ]

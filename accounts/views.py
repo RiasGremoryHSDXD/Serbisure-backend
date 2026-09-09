@@ -7,6 +7,7 @@ from .serializers import (
     CustomLoginSerializer,
     UserAboutSerializer,
     UserTagsSerializer,
+    ContactPrivacySerializer,
     PublicProfileSerializer,
     KasambahayResumeSerializer,
 )
@@ -228,9 +229,9 @@ class UserAboutView(generics.RetrieveUpdateAPIView):
 
 class UserTagsThrottle(UserRateThrottle):
     scope = 'user_tags'
-    rate = '3/h'
+    rate = '60/h'
 
-class UserTagsView(generics.UpdateAPIView):
+class UserTagsView(generics.RetrieveUpdateAPIView):
 
     permission_classes = [IsAuthenticated]
     serializer_class = UserTagsSerializer
@@ -249,6 +250,18 @@ class UserTagsView(generics.UpdateAPIView):
             custom_message = f"Too many attempts. Please try again in {math.ceil(wait/60)} minutes."
 
         raise Throttled(detail=custom_message)
+
+
+class ContactPrivacyView(generics.RetrieveUpdateAPIView):
+    """
+    Get or update contact number visibility for the authenticated user.
+    GET/PATCH /api/v1/accounts/contact-privacy/
+    """
+    permission_classes = [IsAuthenticated]
+    serializer_class = ContactPrivacySerializer
+
+    def get_object(self):
+        return self.request.user
 
 
 class PublicProfileView(generics.RetrieveAPIView):
@@ -358,6 +371,135 @@ class ChangePasswordView(APIView):
         request.user.set_password(new_password)
         request.user.save()
         return Response({'message': 'Password changed successfully.'}, status=status.HTTP_200_OK)
+
+
+class UserSearchView(APIView):
+    """
+    Search active users by query keyword, account type (Kasambahay / Homeowner),
+    city, province, or tags (Tier 2-2).
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        query = request.query_params.get('q', '').strip()
+        role = request.query_params.get('role', '').strip()
+        location = request.query_params.get('location', '').strip()
+        tag = request.query_params.get('tag', '').strip()
+
+        qs = tbl_user_profile.objects.filter(is_active=True).exclude(id=request.user.id)
+
+        if role:
+            qs = qs.filter(account_type__iexact=role)
+        
+        if location:
+            qs = qs.filter(Q(city__icontains=location) | Q(province__icontains=location) | Q(street__icontains=location))
+
+        if tag:
+            qs = qs.filter(user_tags__icontains=tag)
+
+        if query:
+            qs = qs.filter(
+                Q(first_name__icontains=query) |
+                Q(last_name__icontains=query) |
+                Q(user_about__icontains=query) |
+                Q(city__icontains=query) |
+                Q(user_tags__icontains=query)
+            )
+
+        serializer = PublicProfileSerializer(qs[:30], many=True)
+        return Response({'users': serializer.data, 'count': qs.count()}, status=status.HTTP_200_OK)
+
+
+class DeleteAccountView(APIView):
+    """
+    Soft-deletes and deactivates the authenticated user's account (Tier 3-5).
+    Requires the current password to confirm the critical operation.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        password = request.data.get('password')
+        if not password:
+            return Response({'error': 'Password is required to confirm account deletion.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if not request.user.check_password(password):
+            return Response({'error': 'Incorrect password.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        user = request.user
+        user.is_active = False
+        user.user_about = '[Account Deactivated]'
+        user.contact_number = '+639000000000'
+        user.user_tags = []
+        user.save()
+
+        return Response({'message': 'Your account has been deactivated successfully.'}, status=status.HTTP_200_OK)
+
+
+class ExportUserDataView(APIView):
+    """
+    Exports a GDPR-style archive of the user's personal data (Tier 3-5).
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        from booking.models import tbl_booking, tbl_booking_assignment
+        from reviews.models import tbl_review
+
+        posted_bookings = list(tbl_booking.objects.filter(poster_id=user).values(
+            'booking_id', 'booking_type', 'booking_status', 'service_category', 'daily_rate', 'service_address', 'createdAt'
+        ))
+        for b in posted_bookings:
+            b['booking_id'] = str(b['booking_id'])
+            b['createdAt'] = str(b['createdAt'])
+            b['daily_rate'] = str(b['daily_rate'])
+
+        assigned_bookings = list(tbl_booking_assignment.objects.filter(accepter_id=user).values(
+            'booking_assignment_id', 'booking_id', 'accepted_at'
+        ))
+        for a in assigned_bookings:
+            a['booking_assignment_id'] = str(a['booking_assignment_id'])
+            a['booking_id'] = str(a['booking_id'])
+            a['accepted_at'] = str(a['accepted_at'])
+
+        reviews_given = list(tbl_review.objects.filter(reviewer_id=user).values(
+            'review_id', 'rating', 'unstructured_feedback', 'nlp_sentiment', 'createdAt'
+        ))
+        for r in reviews_given:
+            r['review_id'] = str(r['review_id'])
+            r['createdAt'] = str(r['createdAt'])
+
+        reviews_received = list(tbl_review.objects.filter(reviewee_id=user).values(
+            'review_id', 'rating', 'unstructured_feedback', 'nlp_sentiment', 'createdAt'
+        ))
+        for r in reviews_received:
+            r['review_id'] = str(r['review_id'])
+            r['createdAt'] = str(r['createdAt'])
+
+        data = {
+            'profile': {
+                'id': str(user.id),
+                'email': user.email,
+                'first_name': user.first_name,
+                'middle_name': user.middle_name,
+                'last_name': user.last_name,
+                'account_type': user.account_type,
+                'verification_status': user.verification_status,
+                'contact_number': user.contact_number,
+                'user_about': user.user_about,
+                'user_tags': user.user_tags,
+                'city': user.city,
+                'province': user.province,
+                'date_joined': str(user.date_joined),
+            },
+            'posted_bookings': posted_bookings,
+            'assigned_bookings': assigned_bookings,
+            'reviews_given': reviews_given,
+            'reviews_received': reviews_received,
+        }
+
+        return Response({'user_data': data}, status=status.HTTP_200_OK)
+
 
 
 

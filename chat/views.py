@@ -90,7 +90,20 @@ class SendMessageView(generics.CreateAPIView):
         if serializer.is_valid(raise_exception=True):
 
             # Step 4: Save with sender set to authenticated user
-            serializer.save(sender_id=request.user)
+            chat_msg = serializer.save(sender_id=request.user)
+
+            # In-App Notification Trigger (Tier 1-3)
+            try:
+                from notifications.services import send_in_app_notification
+                sender_name = f"{request.user.first_name} {request.user.last_name}".strip() or request.user.username
+                preview = (chat_msg.message_payload[:60] + '...') if len(chat_msg.message_payload) > 60 else chat_msg.message_payload
+                send_in_app_notification(
+                    receiver=chat_msg.receiver_id,
+                    sender=request.user,
+                    message=f"New message from {sender_name}: \"{preview}\""
+                )
+            except Exception:
+                pass
 
             response_data = {
                 "message": "Message sent successfully.",

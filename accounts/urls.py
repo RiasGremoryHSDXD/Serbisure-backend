@@ -6,9 +6,13 @@ from .views import (
     ProfileImageUploadView,
     UserAboutView,
     UserTagsView,
+    ContactPrivacyView,
     PublicProfileView,
     KasambahayResumeView,
     ChangePasswordView,
+    UserSearchView,
+    DeleteAccountView,
+    ExportUserDataView,
 )
 
 
@@ -29,8 +33,20 @@ urlpatterns = [
     # User Tags Endpoints
     path('user-tags/', UserTagsView.as_view(), name='user-tags'),
 
+    # Contact Privacy Endpoint
+    path('contact-privacy/', ContactPrivacyView.as_view(), name='contact-privacy'),
+
     # Public Profile Endpoint
     path('public-profile/<uuid:id>/', PublicProfileView.as_view(), name='public-profile'),
+
+    # User Search Endpoint (Tier 2-2)
+    path('search/', UserSearchView.as_view(), name='user-search'),
+
+    # Delete Account Endpoint (Tier 3-5)
+    path('delete-account/', DeleteAccountView.as_view(), name='delete-account'),
+
+    # Export User Data Endpoint (Tier 3-5)
+    path('export-data/', ExportUserDataView.as_view(), name='export-data'),
 
     # Kasambahay Resume Endpoint
     path('resume/', KasambahayResumeView.as_view(), name='kasambahay-resume'),
