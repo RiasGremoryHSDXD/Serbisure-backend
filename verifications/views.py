@@ -8,69 +8,8 @@ from rest_framework.exceptions import Throttled
 from rest_framework import status
 from rest_framework.response import Response
 import math
-import cloudinary.utils
-
 class DocumentUploadThrottle(UserRateThrottle):
     rate = '20/d'
-
-class DocumentStatusView(generics.GenericAPIView):
-    permission_classes = [IsAuthenticated]
-
-    def get(self, request, *args, **kwargs):
-        user = request.user
-        docs = tbl_documents.objects.filter(user_profile=user).order_by('-created_at')
-        
-        doc_list = []
-        for doc in docs:
-            # Generate signed URL
-            img_url = None
-            if doc.document_url:
-                if doc.document_url.startswith('http://') or doc.document_url.startswith('https://'):
-                    img_url = doc.document_url
-                else:
-                    try:
-                        img_url, _ = cloudinary.utils.cloudinary_url(
-                            doc.document_url,
-                            type="authenticated",
-                            sign_url=True,
-                        )
-                    except Exception:
-                        img_url = doc.document_url
-
-            doc_list.append({
-                'document_id': str(doc.document_id),
-                'document_type': doc.document_type,
-                'verification_status': doc.verification_status,
-                'document_image_url': img_url,
-                'date_issued': doc.date_issued.isoformat() if doc.date_issued else None,
-                'valid_until': doc.valid_until.isoformat() if doc.valid_until else None,
-                'ocr_match_score': doc.ocr_match_score,
-                'ocr_discrepancies': doc.ocr_discrepancies or [],
-                'rejection_reason': doc.rejection_reason,
-                'created_at': doc.created_at.isoformat() if doc.created_at else None,
-            })
-        
-        has_documents = docs.exists()
-        
-        # Calculate overall status
-        if not has_documents:
-            overall_status = 'Unverified'
-        elif docs.filter(verification_status='Rejected').exists():
-            overall_status = 'Rejected'
-        elif docs.filter(verification_status='Pending').exists() or docs.filter(verification_status='Unverified').exists():
-            overall_status = 'Pending'
-        elif docs.filter(verification_status='Verified').exists():
-            overall_status = 'Verified'
-        else:
-            overall_status = 'Unverified'
-            
-        return Response({
-            'overall_status': overall_status,
-            'has_submitted_documents': has_documents,
-            'account_type': user.account_type,
-            'required_documents': ['nbi_clearance', 'police_clearance'] if user.account_type == 'Kasambahay' else ['national_id_front'],
-            'documents': doc_list,
-        }, status=status.HTTP_200_OK)
 
 
 class DocumentUploadView(generics.CreateAPIView):
@@ -230,6 +169,7 @@ class UserDeleteRejectedDocumentView(generics.GenericAPIView):
 
 # Backward-compatible alias
 DeleteRejectedDocumentView = UserDeleteRejectedDocumentView
+DocumentStatusView = UserVerificationStatusView
 
 
 
