@@ -77,8 +77,11 @@ class UserDocumentStatusSerializer(serializers.ModelSerializer):
             'document_image_url',
             'date_issued',
             'valid_until',
+            'extracted_data',
             'ocr_match_score',
             'ocr_discrepancies',
+            'ocr_processed_at',
+            'ocr_retry_count',
             'rejection_reason',
             'created_at',
         ]

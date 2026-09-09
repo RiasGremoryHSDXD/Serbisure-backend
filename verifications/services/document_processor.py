@@ -43,8 +43,9 @@ def process_document(document_id: str):
         img, raw_bytes = fetch_image_from_cloudinary(document.document_url)
     except Exception as e:
         logger.error(f"[DocProcessor] Failed to fetch image from Cloudinary for {document_id}: {e}")
-        document.ocr_processed_at = timezone.now()
-        document.save(update_fields=["ocr_processed_at"])
+        if document.ocr_retry_count >= 3:
+            document.ocr_processed_at = timezone.now()
+            document.save(update_fields=["ocr_processed_at"])
         return
 
     raw_text = ""

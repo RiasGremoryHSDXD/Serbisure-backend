@@ -1,0 +1,45 @@
+# ==============================================================================
+# SerbiSure Backend - Render Infrastructure Blueprint
+# ==============================================================================
+# NOTE FOR FREE TIER DEVELOPMENT:
+# You are currently using the Render Free Tier. Render Cron Jobs require an active
+# paid instance ($7/month Starter or higher).
+#
+# While on the Free Tier:
+# - The backend automatically uses "Lazy Retry" on GET /api/v1/verifications/status/
+#   whenever a user checks their verification status or opens the verification modal.
+# - You can also manually trigger the retry command anytime via shell:
+#   python manage.py retry_failed_ocr
+#
+# WHEN READY TO UPGRADE ($7/month):
+# 1. Connect this Blueprint in your Render Dashboard (New -> Blueprint)
+# 2. Or create a "Cron Job" service on Render with the start command:
+#    python manage.py retry_failed_ocr --max-retries 3 --max-age-hours 48
+# 3. Schedule: */5 * * * * (Every 5 minutes)
+# ==============================================================================
+
+services:
+  # Web Service (Django REST Framework API)
+  - type: web
+    name: serbisure-backend
+    runtime: python
+    buildCommand: "pip install -r requirements.txt && python manage.py migrate"
+    startCommand: "gunicorn Serbisure.wsgi:application"
+    envVars:
+      - key: DJANGO_SETTINGS_MODULE
+        value: Serbisure.settings
+
+# ------------------------------------------------------------------------------
+# Cron Job Service ($7/month Starter plan)
+# Uncomment the block below when upgrading to the $7/mo plan:
+# ------------------------------------------------------------------------------
+#  - type: cron
+#    name: serbisure-ocr-retry-cron
+#    runtime: python
+#    plan: starter
+#    schedule: "*/5 * * * *" # Runs every 5 minutes
+#    buildCommand: "pip install -r requirements.txt"
+#    startCommand: "python manage.py retry_failed_ocr --max-retries 3 --max-age-hours 48"
+#    envVars:
+#      - fromGroup: serbisure-env
+# ------------------------------------------------------------------------------

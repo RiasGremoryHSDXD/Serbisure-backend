@@ -102,6 +102,11 @@ class tbl_documents(models.Model):
         help_text="When OCR + AI processing completed"
     )
 
+    ocr_retry_count = models.PositiveSmallIntegerField(
+        default=0,
+        help_text="Number of times OCR processing has been retried"
+    )
+
     rejection_reason = models.TextField(
         blank=True,
         null=True,
