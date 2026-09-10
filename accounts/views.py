@@ -9,6 +9,7 @@ from .serializers import (
     UserTagsSerializer,
     ContactPrivacySerializer,
     UserSocialLinksSerializer,
+    JobStatusSerializer,
     PublicProfileSerializer,
     KasambahayResumeSerializer,
 )
@@ -251,6 +252,90 @@ class AdminUserListView(generics.ListAPIView):
         return Response(data, status=status.HTTP_200_OK)
 
 
+class AdminDashboardStatsView(APIView):
+    """
+    Provides real-time aggregated metrics directly from the database for the SerbiSure Admin dashboard.
+    Supports citywide view (Superadmin) and barangay-scoped view (Local LGU).
+    """
+    permission_classes = [AllowAny]
+
+    def get(self, request, *args, **kwargs):
+        barangay_param = request.query_params.get('barangay')
+        
+        workers_qs = tbl_user_profile.objects.filter(account_type='Kasambahay')
+        homeowners_qs = tbl_user_profile.objects.filter(account_type='Homeowner')
+        
+        if barangay_param and barangay_param.upper() not in ['ALL', 'ALL BARANGAYS']:
+            from django.db.models import Q
+            workers_qs = workers_qs.filter(
+                Q(city__icontains=barangay_param) | Q(street__icontains=barangay_param)
+            )
+            homeowners_qs = homeowners_qs.filter(
+                Q(city__icontains=barangay_param) | Q(street__icontains=barangay_param)
+            )
+
+        total_workers = workers_qs.count()
+        total_homeowners = homeowners_qs.count()
+        
+        # Calculate employed workers from active booking assignments OR self-marked is_on_job
+        from booking.models import tbl_booking_assignment, tbl_booking
+        active_booking_ids = tbl_booking.objects.filter(
+            booking_status__in=['Accepted', 'InProgress']
+        ).values_list('booking_id', flat=True)
+        
+        assigned_worker_ids = tbl_booking_assignment.objects.filter(
+            booking_id__in=active_booking_ids
+        ).values_list('accepter_id', flat=True).distinct()
+        
+        from django.db.models import Q
+        employed = workers_qs.filter(
+            Q(is_on_job=True) | Q(id__in=assigned_worker_ids)
+        ).distinct().count()
+        available = max(0, total_workers - employed)
+        employment_ratio = round((employed / total_workers * 100)) if total_workers > 0 else 0
+
+        # Dynamic Barangay Breakdowns
+        barangay_breakdown = []
+        for b_name in ['Pagatpat', 'Canitoan']:
+            b_workers = tbl_user_profile.objects.filter(
+                account_type='Kasambahay'
+            ).filter(
+                Q(city__icontains=b_name) | Q(street__icontains=b_name)
+            )
+            b_total = b_workers.count()
+            b_employed = b_workers.filter(
+                Q(is_on_job=True) | Q(id__in=assigned_worker_ids)
+            ).distinct().count()
+            b_avail = max(0, b_total - b_employed)
+            b_ratio = round((b_employed / b_total * 100)) if b_total > 0 else 0
+            barangay_breakdown.append({
+                "name": b_name,
+                "totalWorkers": b_total,
+                "employed": b_employed,
+                "available": b_avail,
+                "employmentRatio": b_ratio,
+                "status": "ACTIVE"
+            })
+
+        # Pending verification queue count
+        from verifications.models import tbl_documents
+        pending_verifications = tbl_documents.objects.filter(
+            verification_status='Pending'
+        ).count()
+
+        return Response({
+            "metrics": {
+                "totalWorkers": total_workers,
+                "totalEmployed": employed,
+                "totalAvailable": available,
+                "employmentRatio": employment_ratio,
+                "totalHomeowners": total_homeowners,
+                "pendingVerifications": pending_verifications,
+            },
+            "barangays": barangay_breakdown,
+        }, status=status.HTTP_200_OK)
+
+
 class ProfileImageUploadThrottle(UserRateThrottle):
     scope = 'profile_image_upload'
     rate = '2/h'
@@ -366,6 +451,17 @@ class UserSocialLinksView(generics.RetrieveUpdateAPIView):
             custom_message = f"Too many attempts. Please try again in {math.ceil(wait / 60)} minutes."
         raise Throttled(detail=custom_message)
 
+
+class JobStatusView(generics.RetrieveUpdateAPIView):
+    """
+    Get or update Kasambahay availability / job status.
+    GET/PATCH /api/v1/accounts/job-status/
+    """
+    permission_classes = [IsAuthenticated]
+    serializer_class = JobStatusSerializer
+
+    def get_object(self):
+        return self.request.user
 
 class PublicProfileView(generics.RetrieveAPIView):
     """

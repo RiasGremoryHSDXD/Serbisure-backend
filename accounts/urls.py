@@ -8,6 +8,7 @@ from .views import (
     UserTagsView,
     ContactPrivacyView,
     UserSocialLinksView,
+    JobStatusView,
     PublicProfileView,
     KasambahayResumeView,
     ChangePasswordView,
@@ -15,6 +16,7 @@ from .views import (
     DeleteAccountView,
     ExportUserDataView,
     AdminUserListView,
+    AdminDashboardStatsView,
 )
 
 urlpatterns = [
@@ -39,6 +41,9 @@ urlpatterns = [
     # Social Links Endpoint
     path('social-links/', UserSocialLinksView.as_view(), name='user-social-links'),
 
+    # Kasambahay Availability / Job Status Endpoint
+    path('job-status/', JobStatusView.as_view(), name='job-status'),
+
     # Public Profile Endpoint
     path('public-profile/<uuid:id>/', PublicProfileView.as_view(), name='public-profile'),
 
@@ -62,4 +67,5 @@ urlpatterns = [
 
     # Admin Endpoints
     path('admin/users/', AdminUserListView.as_view(), name='admin-users'),
+    path('admin/dashboard-stats/', AdminDashboardStatsView.as_view(), name='admin-dashboard-stats'),
 ]

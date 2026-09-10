@@ -322,6 +322,11 @@ class tbl_user_profile(AbstractUser):
         help_text="Controls if contact number is visible to other users on public profile"
     )
 
+    is_on_job = models.BooleanField(
+        default=False,
+        help_text="Kasambahay employment status: True if On the Job, False if Available"
+    )
+
     user_about = models.TextField(
         max_length=500,
         blank=True,

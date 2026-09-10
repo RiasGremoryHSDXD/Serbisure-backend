@@ -310,7 +310,6 @@ class ContactPrivacySerializer(serializers.ModelSerializer):
         model = tbl_user_profile
         fields = ['show_contact_number']
 
-
 SUPPORTED_SOCIAL_PLATFORMS = {
     'facebook': {
         'name': 'Facebook',
@@ -460,6 +459,13 @@ class UserSocialLinksSerializer(serializers.ModelSerializer):
             })
 
         return cleaned
+
+
+class JobStatusSerializer(serializers.ModelSerializer):
+
+    class Meta:
+        model = tbl_user_profile
+        fields = ['is_on_job']
 
 
 class KasambahayResumeSerializer(serializers.ModelSerializer):
