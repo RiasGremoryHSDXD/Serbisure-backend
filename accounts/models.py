@@ -22,6 +22,21 @@ def validate_user_tags(value):
             raise ValidationError(f"Tag '{tag}' exceeds 15 characters")
 
 
+def validate_social_links(value):
+    if not isinstance(value, list):
+        raise ValidationError("Social links must be a list.")
+    
+    if len(value) > 5:
+        raise ValidationError("You can add a maximum of 5 social accounts.")
+
+    for item in value:
+        if not isinstance(item, dict):
+            raise ValidationError("Each social link must be an object containing 'platform' and 'url'.")
+        url = item.get('url', '')
+        if not isinstance(url, str) or len(url) > 255:
+            raise ValidationError("Each social link URL must be a string up to 255 characters.")
+
+
 class CustomUserManager(BaseUserManager):
 
     def create_user(self, email, password=None, **extra_fields):
@@ -320,6 +335,18 @@ class tbl_user_profile(AbstractUser):
         validators=[validate_user_tags]
     )
 
+    social_links = models.JSONField(
+        default=list,
+        blank=True,
+        validators=[validate_social_links],
+        help_text="User's external social contact links (Facebook, Instagram, Telegram, etc.)"
+    )
+
+    show_social_links = models.BooleanField(
+        default=True,
+        help_text="Controls if social links are visible to other users on public profile"
+    )
+
     def __str__(self):
         return self.username
     
@@ -340,5 +367,10 @@ class tbl_user_profile(AbstractUser):
             CheckConstraint(
                 condition=RawSQL("jsonb_typeof(user_tags) = 'array'", [], output_field=models.BooleanField()),
                 name='valid_user_tags_must_be_array'
+            ),
+
+            CheckConstraint(
+                condition=RawSQL("jsonb_typeof(social_links) = 'array'", [], output_field=models.BooleanField()),
+                name='valid_social_links_must_be_array'
             )
         ]

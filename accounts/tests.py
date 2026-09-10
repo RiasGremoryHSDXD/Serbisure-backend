@@ -159,16 +159,25 @@ class TestSerializers(TestCase):
         self.assertFalse(serializer.is_valid())
         self.assertIn("password", serializer.errors)
 
-    def test_password_under_11_chars_rejected(self):
+    def test_password_under_8_chars_rejected(self):
         """
-        GIVEN  a password shorter than 11 characters
+        GIVEN  a password shorter than 8 characters (e.g. 7 chars)
         THEN   serializer must be invalid.
-        Boundary: min length is 11 chars.
+        Boundary: min length is 8 chars.
         """
         self.valid_data["password"] = "Short1!"  # 7 chars
         serializer = UserRegistrationSerializer(data=self.valid_data)
         self.assertFalse(serializer.is_valid())
         self.assertIn("password", serializer.errors)
+
+    def test_password_8_chars_without_special_char_accepted(self):
+        """
+        GIVEN  a password of exactly 8 characters with letters and numbers, but no special characters
+        THEN   serializer must be valid.
+        """
+        self.valid_data["password"] = "Serbi123"  # 8 chars, letter + number, no special char
+        serializer = UserRegistrationSerializer(data=self.valid_data)
+        self.assertTrue(serializer.is_valid(), serializer.errors)
 
     def test_password_over_30_chars_rejected(self):
         """
@@ -1221,6 +1230,123 @@ class TestChangePasswordAPI(TestCase):
             'confirm_password': 'NewPassword456!',
         })
         self.assertEqual(res.status_code, status.HTTP_401_UNAUTHORIZED)
+
+
+class UserSocialLinksTests(APITestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(
+            email='social_unit_test@example.com',
+            username='social_unit_user',
+            password='TestPassword123!',
+            first_name='Maria',
+            last_name='Santos',
+            account_type='Kasambahay',
+            verification_status='Verified'
+        )
+        self.url = reverse('user-social-links')
+
+    def test_unauthenticated_user_blocked(self):
+        res = self.client.get(self.url)
+        self.assertEqual(res.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_get_social_links(self):
+        self.client.force_authenticate(user=self.user)
+        res = self.client.get(self.url)
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data['social_links'], [])
+        self.assertTrue(res.data['show_social_links'])
+
+    def test_patch_social_links_with_normalization(self):
+        self.client.force_authenticate(user=self.user)
+        payload = {
+            "show_social_links": True,
+            "social_links": [
+                {"platform": "facebook", "url": "facebook.com/maria.santos.cdo"},
+                {"platform": "instagram", "url": "@maria_santos"},
+                {"platform": "telegram", "url": "https://t.me/mariasantos"}
+            ]
+        }
+        res = self.client.patch(self.url, payload, format='json')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        links = res.data['social_links']
+        self.assertEqual(len(links), 3)
+
+        fb = next(item for item in links if item['platform'] == 'facebook')
+        self.assertEqual(fb['url'], 'https://facebook.com/maria.santos.cdo')
+        self.assertEqual(fb['handle'], 'maria.santos.cdo')
+
+        ig = next(item for item in links if item['platform'] == 'instagram')
+        self.assertEqual(ig['url'], 'https://instagram.com/maria_santos')
+        self.assertEqual(ig['handle'], 'maria_santos')
+
+    def test_xss_scheme_rejected(self):
+        self.client.force_authenticate(user=self.user)
+        payload = {
+            "social_links": [
+                {"platform": "facebook", "url": "javascript:alert(document.cookie)"}
+            ]
+        }
+        res = self.client.patch(self.url, payload, format='json')
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('Unsafe URL scheme', str(res.data))
+
+    def test_private_ip_rejected(self):
+        self.client.force_authenticate(user=self.user)
+        payload = {
+            "social_links": [
+                {"platform": "website", "url": "http://127.0.0.1:8000/admin"}
+            ]
+        }
+        res = self.client.patch(self.url, payload, format='json')
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('Private network address', str(res.data))
+
+    def test_more_than_5_links_rejected(self):
+        self.client.force_authenticate(user=self.user)
+        payload = {
+            "social_links": [
+                {"platform": "facebook", "url": "https://facebook.com/1"},
+                {"platform": "instagram", "url": "https://instagram.com/2"},
+                {"platform": "telegram", "url": "https://t.me/3"},
+                {"platform": "tiktok", "url": "https://tiktok.com/@4"},
+                {"platform": "linkedin", "url": "https://linkedin.com/in/5"},
+                {"platform": "youtube", "url": "https://youtube.com/@6"},
+            ]
+        }
+        res = self.client.patch(self.url, payload, format='json')
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('maximum of 5', str(res.data))
+
+    def test_duplicate_platform_rejected(self):
+        self.client.force_authenticate(user=self.user)
+        payload = {
+            "social_links": [
+                {"platform": "facebook", "url": "https://facebook.com/1"},
+                {"platform": "facebook", "url": "https://facebook.com/2"}
+            ]
+        }
+        res = self.client.patch(self.url, payload, format='json')
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('already added a Facebook account', str(res.data))
+
+    def test_public_profile_visibility(self):
+        self.client.force_authenticate(user=self.user)
+        self.user.social_links = [{"platform": "facebook", "platform_name": "Facebook", "url": "https://facebook.com/maria", "handle": "maria"}]
+        self.user.show_social_links = True
+        self.user.save()
+
+        pub_url = reverse('public-profile', kwargs={'id': self.user.id})
+        res = self.client.get(pub_url)
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(res.data['social_links']), 1)
+
+        # Toggle to hidden
+        self.user.show_social_links = False
+        self.user.save()
+        res_hidden = self.client.get(pub_url)
+        self.assertEqual(res_hidden.status_code, status.HTTP_200_OK)
+        self.assertEqual(res_hidden.data['social_links'], [])
+
 
 
 

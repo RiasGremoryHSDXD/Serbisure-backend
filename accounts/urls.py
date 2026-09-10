@@ -7,6 +7,7 @@ from .views import (
     UserAboutView,
     UserTagsView,
     ContactPrivacyView,
+    UserSocialLinksView,
     PublicProfileView,
     KasambahayResumeView,
     ChangePasswordView,
@@ -34,6 +35,9 @@ urlpatterns = [
 
     # Contact Privacy Endpoint
     path('contact-privacy/', ContactPrivacyView.as_view(), name='contact-privacy'),
+
+    # Social Links Endpoint
+    path('social-links/', UserSocialLinksView.as_view(), name='user-social-links'),
 
     # Public Profile Endpoint
     path('public-profile/<uuid:id>/', PublicProfileView.as_view(), name='public-profile'),

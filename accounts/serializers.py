@@ -5,12 +5,14 @@ from core.utils import convert_title, check_input_letters
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from rest_framework.exceptions import AuthenticationFailed, ValidationError
 import uuid
+import re
+from urllib.parse import urlparse
 
 class UserRegistrationSerializer(serializers.ModelSerializer):
     # This enrsure the password is required to create an account,
     # but the API will never will accidentally send it back to the frontend
 
-    password = serializers.CharField(write_only=True)
+    password = serializers.CharField(write_only=True, trim_whitespace=False)
     verification_status = serializers.CharField(read_only=True)
 
     class Meta: 
@@ -81,21 +83,29 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
 
     def validate_password(self, value):
 
-        # 1. Check length 
-        if len(value) < 11: 
-            raise serializers.ValidationError("Password must be at least 11 characters long.")
+        # 1. Reject leading/trailing whitespace (prevents mobile autocomplete auto-space lockout)
+        if value != value.strip():
+            raise serializers.ValidationError("Password cannot start or end with spaces.")
+
+        # 2. Check length (Minimum 8 characters for non-techy accessibility)
+        if len(value) < 8: 
+            raise serializers.ValidationError("Password must be at least 8 characters long.")
 
         if len(value) > 30:
             raise serializers.ValidationError("Password cannot exceed 30 characters.")
 
-        # 2. Check for at least one number 
+        # 3. Check for at least one number 
         if not any(char.isdigit() for char in value):
-            raise serializers.ValidationError("Password must contain at least one number")
+            raise serializers.ValidationError("Password must contain at least one number.")
 
-        # 3. Check for at least one letter 
+        # 4. Check for at least one letter 
         if not any(char.isalpha() for char in value):
-            raise serializers.ValidationError("Password must contain at least one letter")
+            raise serializers.ValidationError("Password must contain at least one letter.")
         
+        # 5. Null byte check
+        if '\x00' in value:
+            raise serializers.ValidationError("Password cannot contain null characters.")
+
         return value         
 
     def validate_first_name(self, text):
@@ -196,6 +206,8 @@ class CustomLoginSerializer(TokenObtainPairSerializer):
         token['email'] = user.email
         token['contact_number'] = user.contact_number
         token['show_contact_number'] = getattr(user, 'show_contact_number', True)
+        token['social_links'] = getattr(user, 'social_links', []) or []
+        token['show_social_links'] = getattr(user, 'show_social_links', True)
         token['user_tags'] = user.user_tags or []
         token['street'] = user.street or ''
         token['city'] = user.city or ''
@@ -297,6 +309,157 @@ class ContactPrivacySerializer(serializers.ModelSerializer):
     class Meta:
         model = tbl_user_profile
         fields = ['show_contact_number']
+
+
+SUPPORTED_SOCIAL_PLATFORMS = {
+    'facebook': {
+        'name': 'Facebook',
+        'domains': ['facebook.com', 'fb.com', 'm.me', 'messenger.com', 'www.facebook.com'],
+        'base_url': 'https://facebook.com/',
+    },
+    'instagram': {
+        'name': 'Instagram',
+        'domains': ['instagram.com', 'instagr.am', 'www.instagram.com'],
+        'base_url': 'https://instagram.com/',
+    },
+    'telegram': {
+        'name': 'Telegram',
+        'domains': ['t.me', 'telegram.me'],
+        'base_url': 'https://t.me/',
+    },
+    'whatsapp': {
+        'name': 'WhatsApp',
+        'domains': ['wa.me', 'whatsapp.com', 'api.whatsapp.com'],
+        'base_url': 'https://wa.me/',
+    },
+    'viber': {
+        'name': 'Viber',
+        'domains': ['viber.com', 'chats.viber.com', 'viber.click'],
+        'base_url': 'https://viber.click/',
+    },
+    'tiktok': {
+        'name': 'TikTok',
+        'domains': ['tiktok.com', 'www.tiktok.com'],
+        'base_url': 'https://tiktok.com/@',
+    },
+    'x_twitter': {
+        'name': 'X (Twitter)',
+        'domains': ['twitter.com', 'x.com', 'www.twitter.com', 'www.x.com'],
+        'base_url': 'https://x.com/',
+    },
+    'linkedin': {
+        'name': 'LinkedIn',
+        'domains': ['linkedin.com', 'www.linkedin.com'],
+        'base_url': 'https://linkedin.com/in/',
+    },
+    'youtube': {
+        'name': 'YouTube',
+        'domains': ['youtube.com', 'youtu.be', 'www.youtube.com'],
+        'base_url': 'https://youtube.com/@',
+    },
+}
+
+
+class UserSocialLinksSerializer(serializers.ModelSerializer):
+    social_links = serializers.ListField(
+        child=serializers.DictField(),
+        required=False,
+        allow_empty=True
+    )
+    show_social_links = serializers.BooleanField(required=False)
+
+    class Meta:
+        model = tbl_user_profile
+        fields = ['social_links', 'show_social_links']
+
+    def validate_social_links(self, value):
+        if not isinstance(value, list):
+            raise serializers.ValidationError("Social links must be a list of link objects.")
+
+        if len(value) > 5:
+            raise serializers.ValidationError("You can add a maximum of 5 social accounts.")
+
+        cleaned = []
+        seen_platforms = set()
+        seen_urls = set()
+
+        for idx, item in enumerate(value):
+            if not isinstance(item, dict):
+                raise serializers.ValidationError(f"Item {idx + 1} must be an object with 'platform' and 'url'.")
+
+            raw_platform = str(item.get('platform', '') or '').strip().lower()
+            raw_url = str(item.get('url', '') or '').strip()
+
+            if not raw_url:
+                continue
+
+            if '\x00' in raw_url:
+                raise serializers.ValidationError(f"URL at item {idx + 1} cannot contain null characters.")
+
+            # Block malicious URI schemes (XSS protection)
+            if re.match(r'^(javascript|data|file|vbscript):', raw_url, re.IGNORECASE):
+                raise serializers.ValidationError(f"Unsafe URL scheme detected at item {idx + 1}.")
+
+            # Auto-normalize handle input (e.g. '@maria_santos')
+            if raw_url.startswith('@'):
+                handle = raw_url.lstrip('@')
+                if raw_platform in SUPPORTED_SOCIAL_PLATFORMS:
+                    raw_url = SUPPORTED_SOCIAL_PLATFORMS[raw_platform]['base_url'] + handle
+                else:
+                    raw_url = 'https://' + raw_url.lstrip('@')
+            elif not raw_url.startswith(('http://', 'https://')):
+                raw_url = 'https://' + raw_url
+
+            parsed = urlparse(raw_url)
+            netloc = (parsed.netloc or '').lower().split(':')[0]
+            if not netloc or '.' not in netloc:
+                raise serializers.ValidationError(f"Invalid domain in URL at item {idx + 1}: '{raw_url}'")
+
+            # Block private IP / loopback probing (SSRF protection)
+            if netloc in ['localhost', '127.0.0.1', '0.0.0.0'] or netloc.startswith(('192.168.', '10.', '172.16.', '172.17.', '172.18.', '172.19.', '172.2', '172.3', '169.254.')):
+                raise serializers.ValidationError(f"Private network address not allowed at item {idx + 1}.")
+
+            # Detect platform if not explicitly provided or standardize platform key
+            detected_platform = raw_platform
+            for p_key, meta in SUPPORTED_SOCIAL_PLATFORMS.items():
+                if any(d in netloc for d in meta['domains']):
+                    detected_platform = p_key
+                    break
+
+            if not detected_platform:
+                detected_platform = 'website'
+
+            platform_info = SUPPORTED_SOCIAL_PLATFORMS.get(detected_platform, {
+                'name': detected_platform.replace('_', ' ').capitalize(),
+                'domains': [],
+                'base_url': ''
+            })
+
+            clean_url = parsed.geturl()
+            if len(clean_url) > 255:
+                raise serializers.ValidationError(f"URL at item {idx + 1} exceeds maximum length of 255 characters.")
+
+            # Deduplication
+            if detected_platform in seen_platforms and detected_platform != 'website':
+                raise serializers.ValidationError(f"You have already added a {platform_info['name']} account.")
+            if clean_url in seen_urls:
+                raise serializers.ValidationError(f"Duplicate link detected: '{clean_url}'")
+
+            seen_platforms.add(detected_platform)
+            seen_urls.add(clean_url)
+
+            # Derive clean username or handle from path for display
+            path_cleaned = parsed.path.strip('/')
+            display_handle = path_cleaned.split('/')[-1] if path_cleaned else netloc
+
+            cleaned.append({
+                'platform': detected_platform,
+                'platform_name': platform_info['name'],
+                'url': clean_url,
+                'handle': display_handle
+            })
+
+        return cleaned
 
 
 class KasambahayResumeSerializer(serializers.ModelSerializer):
@@ -401,6 +564,8 @@ class PublicProfileSerializer(serializers.ModelSerializer):
             'city',
             'province',
             'date_joined',
+            'social_links',
+            'show_social_links',
         ]
         read_only_fields = fields
 
@@ -411,6 +576,14 @@ class PublicProfileSerializer(serializers.ModelSerializer):
             data['show_contact_number'] = True
         else:
             data['show_contact_number'] = False
+
+        if getattr(instance, 'show_social_links', True):
+            data['social_links'] = getattr(instance, 'social_links', []) or []
+            data['show_social_links'] = True
+        else:
+            data['social_links'] = []
+            data['show_social_links'] = False
+
         return data
 
     def get_full_name(self, obj):

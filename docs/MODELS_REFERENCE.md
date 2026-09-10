@@ -39,6 +39,8 @@ This document outlines the database schema, models, field types, and choices (en
 | `show_contact_number` | `BooleanField` | - |
 | `user_about` | `TextField` | Blank=True |
 | `user_tags` | `JSONField` | Blank=True |
+| `social_links` | `JSONField` | Blank=True |
+| `show_social_links` | `BooleanField` | - |
 
 ## Verifications App
 

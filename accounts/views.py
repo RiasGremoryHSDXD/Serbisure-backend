@@ -8,6 +8,7 @@ from .serializers import (
     UserAboutSerializer,
     UserTagsSerializer,
     ContactPrivacySerializer,
+    UserSocialLinksSerializer,
     PublicProfileSerializer,
     KasambahayResumeSerializer,
 )
@@ -338,6 +339,32 @@ class ContactPrivacyView(generics.RetrieveUpdateAPIView):
 
     def get_object(self):
         return self.request.user
+
+
+class UserSocialLinksThrottle(UserRateThrottle):
+    scope = 'user_social_links'
+    rate = '30/h'
+
+
+class UserSocialLinksView(generics.RetrieveUpdateAPIView):
+    """
+    Get (GET) or update (PATCH, PUT) social accounts and contact links for the authenticated user.
+    GET/PATCH /api/v1/accounts/social-links/
+    """
+    permission_classes = [IsAuthenticated]
+    serializer_class = UserSocialLinksSerializer
+    throttle_classes = [UserSocialLinksThrottle]
+
+    def get_object(self):
+        return self.request.user
+
+    def throttled(self, request, wait):
+        if wait > 3600:
+            time_left = math.ceil(wait / 3600)
+            custom_message = f"Too many attempts. Please try again in {time_left} hours."
+        else:
+            custom_message = f"Too many attempts. Please try again in {math.ceil(wait / 60)} minutes."
+        raise Throttled(detail=custom_message)
 
 
 class PublicProfileView(generics.RetrieveAPIView):
