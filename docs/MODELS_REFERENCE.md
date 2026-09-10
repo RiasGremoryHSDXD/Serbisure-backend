@@ -153,8 +153,21 @@ This document outlines the database schema, models, field types, and choices (en
 | `sender_id` | `ForeignKey` | FK -> `tbl_user_profile` |
 | `receiver_id` | `ForeignKey` | FK -> `tbl_user_profile` |
 | `booking_id` | `ForeignKey` | Null=True, Blank=True, FK -> `tbl_booking` |
-| `message_payload` | `EncryptedTextField` | - |
+| `message_type` | `CharField` | Choices: ['text', 'image'] |
+| `image_public_id` | `CharField` | Null=True, Blank=True |
+| `message_payload` | `EncryptedTextField` | Null=True, Blank=True |
 | `is_read` | `BooleanField` | - |
 | `is_deleted` | `BooleanField` | - |
 | `createdAt` | `DateTimeField` | Blank=True |
+
+### `tbl_chat_reaction`
+- **Database Table:** `tbl_chat_reaction`
+
+| Field Name | Data Type | Constraints / Choices / FK |
+| --- | --- | --- |
+| `reaction_id` | `UUIDField` | Primary Key, Unique |
+| `message` | `ForeignKey` | FK -> `tbl_chat_message` |
+| `reactor` | `ForeignKey` | FK -> `tbl_user_profile` |
+| `emoji` | `CharField` | - |
+| `reacted_at` | `DateTimeField` | Blank=True |
 
