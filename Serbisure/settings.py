@@ -164,6 +164,8 @@ REST_FRAMEWORK = {
         'chat_messages': '120/m',
         'chat_inbox': '60/m',
         'chat_read': '60/m',
+        'chat_image_upload': '20/h',
+        'chat_react': '120/h',
         # Accounts
         'profile_image_upload': '2/h',
         'user_about': '3/h',

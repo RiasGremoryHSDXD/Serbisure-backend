@@ -3,19 +3,24 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.throttling import UserRateThrottle
 from rest_framework.exceptions import Throttled, ValidationError
 from rest_framework.response import Response
+from rest_framework.parsers import MultiPartParser, FormParser
 from django.core.cache import cache
 from django.contrib.auth import get_user_model
-from django.db.models import Q, Max, Count, Subquery, OuterRef
+from django.db import transaction, IntegrityError
+from django.db.models import Q
 from core.utils import check_valid_uuid
-from .models import tbl_chat_message
+from .models import tbl_chat_message, tbl_chat_reaction, ALLOWED_EMOJIS
 from .serializers import (
     SendMessageSerializer,
+    SendImageMessageSerializer,
+    ReactMessageSerializer,
     ChatMessageSerializer,
     ChatInboxSerializer,
     MarkMessageReadSerializer
 )
 import math
 import cloudinary.utils
+import cloudinary.uploader
 
 User = get_user_model()
 
@@ -44,6 +49,16 @@ class MarkMessageReadThrottle(UserRateThrottle):
     rate = '60/m'
 
 
+class ChatImageUploadThrottle(UserRateThrottle):
+    scope = 'chat_image_upload'
+    rate = '20/h'
+
+
+class ChatReactThrottle(UserRateThrottle):
+    scope = 'chat_react'
+    rate = '120/h'
+
+
 # ─────────────────────────────────────────────
 # Helper
 # ─────────────────────────────────────────────
@@ -62,7 +77,7 @@ def _get_throttle_message(wait):
 
 class SendMessageView(generics.CreateAPIView):
     """
-    Sends a new message to another user.
+    Sends a new text message to another user.
     Requires a valid UUIDv4 Idempotency-Key header to prevent duplicate messages on network retry.
     """
     permission_classes = [IsAuthenticated]
@@ -70,7 +85,6 @@ class SendMessageView(generics.CreateAPIView):
     serializer_class = SendMessageSerializer
 
     def create(self, request, *args, **kwargs):
-
         # Step 1: Validate Idempotency-Key header
         idempotency_key = request.headers.get('Idempotency-Key')
 
@@ -88,11 +102,10 @@ class SendMessageView(generics.CreateAPIView):
         # Step 3: Validate serializer input
         serializer = self.get_serializer(data=request.data)
         if serializer.is_valid(raise_exception=True):
-
             # Step 4: Save with sender set to authenticated user
             chat_msg = serializer.save(sender_id=request.user)
 
-            # In-App Notification Trigger (Tier 1-3)
+            # In-App Notification Trigger
             try:
                 from notifications.services import send_in_app_notification
                 sender_name = f"{request.user.first_name} {request.user.last_name}".strip() or request.user.username
@@ -125,6 +138,271 @@ class SendMessageView(generics.CreateAPIView):
 
 
 # ─────────────────────────────────────────────
+# POST /api/v1/chat/send-image/
+# ─────────────────────────────────────────────
+
+class SendImageMessageView(generics.CreateAPIView):
+    """
+    Uploads and sends an image attachment message.
+    Requires a valid UUIDv4 Idempotency-Key header to prevent duplicate Cloudinary uploads on retry.
+    Accepts multipart/form-data with image, receiver_id, optional booking_id, and optional message_payload (caption).
+    """
+    permission_classes = [IsAuthenticated]
+    throttle_classes = [ChatImageUploadThrottle]
+    serializer_class = SendImageMessageSerializer
+    parser_classes = [MultiPartParser, FormParser]
+
+    def create(self, request, *args, **kwargs):
+        # Step 1: Validate Idempotency-Key header
+        idempotency_key = request.headers.get('Idempotency-Key')
+
+        if not idempotency_key or not check_valid_uuid(idempotency_key):
+            return Response(
+                {"detail": "The Idempotency-Key header is required and must be a valid UUID v4."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Step 2: Check cache — prevent duplicate sends on network retry (Edge Case #7, #33)
+        cached_response = cache.get(f'chat_send_image_{idempotency_key}')
+        if cached_response:
+            return Response(cached_response['data'], status=cached_response['status'])
+
+        # Step 3: Check recipient user before upload (Edge Case #10, #11)
+        receiver_raw = request.data.get('receiver_id')
+        if not receiver_raw or not check_valid_uuid(str(receiver_raw)):
+            return Response(
+                {"receiver_id": ["Invalid or missing recipient UUID."]},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if str(receiver_raw) == str(request.user.id):
+            return Response(
+                {"receiver_id": ["You cannot send a message to yourself."]},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            receiver_user = User.objects.get(id=receiver_raw)
+        except User.DoesNotExist:
+            return Response(
+                {"detail": "Recipient user not found."},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        # Step 4: Check image file input exists (Edge Case #5, #12)
+        if 'image' not in request.FILES:
+            return Response(
+                {"image": ["No image file was provided."]},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if len(request.FILES.getlist('image')) > 1:
+            return Response(
+                {"detail": "Only a single image upload is allowed."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Step 5: Validate serializer input (size <= 10MB, not empty, not SVG, magic bytes, caption <= 200)
+        serializer = self.get_serializer(data=request.data, context={'request': request})
+        serializer.is_valid(raise_exception=True)
+        validated_data = serializer.validated_data
+
+        image_file = validated_data['image']
+        caption = validated_data.get('message_payload', '')
+        booking = validated_data.get('booking_id')
+
+        # Step 6: Upload to Cloudinary (Edge Case #9)
+        try:
+            upload_result = cloudinary.uploader.upload(
+                image_file,
+                folder="serbisure_chat_images/",
+                type="authenticated"
+            )
+        except Exception:
+            return Response(
+                {"detail": "Image storage is temporarily unavailable. Please try again."},
+                status=status.HTTP_502_BAD_GATEWAY
+            )
+
+        public_id = upload_result.get('public_id')
+        if not public_id:
+            return Response(
+                {"detail": "Failed to obtain image asset identifier."},
+                status=status.HTTP_502_BAD_GATEWAY
+            )
+
+        # Step 7: Check image dimensions (Pixel bomb defense - Edge Case #3)
+        width = upload_result.get('width', 0)
+        height = upload_result.get('height', 0)
+        if width > 10000 or height > 10000:
+            try:
+                cloudinary.uploader.destroy(public_id, type="authenticated")
+            except Exception:
+                pass
+            return Response(
+                {"detail": "Image dimensions are too large. Maximum dimensions are 10000x10000 pixels."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Step 8: Save tbl_chat_message in DB
+        chat_msg = tbl_chat_message.objects.create(
+            sender_id=request.user,
+            receiver_id=receiver_user,
+            booking_id=booking,
+            message_type='image',
+            image_public_id=public_id,
+            message_payload=caption if caption else None,
+        )
+
+        # Step 9: In-app notification
+        try:
+            from notifications.services import send_in_app_notification
+            sender_name = f"{request.user.first_name} {request.user.last_name}".strip() or request.user.username
+            notification_preview = f"📷 {caption}" if caption else "📷 Photo"
+            send_in_app_notification(
+                receiver=chat_msg.receiver_id,
+                sender=request.user,
+                message=f"New message from {sender_name}: \"{notification_preview}\""
+            )
+        except Exception:
+            pass
+
+        # Step 10: Serialize response
+        out_serializer = ChatMessageSerializer(chat_msg, context={'request': request})
+        response_data = {
+            "message": "Image sent successfully.",
+            "data": out_serializer.data
+        }
+        response_status = status.HTTP_201_CREATED
+
+        # Step 11: Store in cache for 1 hour
+        cache.set(
+            f'chat_send_image_{idempotency_key}',
+            {'data': response_data, 'status': response_status},
+            timeout=3600
+        )
+
+        return Response(response_data, status=response_status)
+
+    def throttled(self, request, wait):
+        raise Throttled(detail=_get_throttle_message(wait))
+
+
+# ─────────────────────────────────────────────
+# POST /api/v1/chat/react/<uuid:message_id>/
+# ─────────────────────────────────────────────
+
+class ReactMessageView(generics.GenericAPIView):
+    """
+    Toggles an emoji reaction on a message.
+    - No existing reaction: creates one (action: 'added')
+    - Same emoji exists: deletes it (action: 'removed')
+    - Different emoji exists: updates it (action: 'changed')
+    Only conversation participants can react.
+    """
+    permission_classes = [IsAuthenticated]
+    throttle_classes = [ChatReactThrottle]
+    serializer_class = ReactMessageSerializer
+
+    def post(self, request, message_id, *args, **kwargs):
+        # Step 1: Validate message UUID
+        if not message_id or not check_valid_uuid(str(message_id)):
+            return Response(
+                {"detail": "Invalid or missing message UUID."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Step 2: Fetch message (Edge Case #20, #21: deleted or non-existent -> 404)
+        try:
+            message = tbl_chat_message.objects.get(chat_message_id=message_id, is_deleted=False)
+        except tbl_chat_message.DoesNotExist:
+            return Response(
+                {"detail": "Message not found."},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        # Step 3: Authorization guard (Edge Case #19)
+        if request.user.id not in (message.sender_id_id, message.receiver_id_id):
+            return Response(
+                {"detail": "You are not a participant of this conversation."},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        # Step 4: Validate request body (Edge Case #16, #17, #18, #25)
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        emoji = serializer.validated_data['emoji']
+
+        # Step 5: Toggle logic with race condition defense (Edge Case #22)
+        action = "added"
+        my_reaction = emoji
+
+        with transaction.atomic():
+            reaction = tbl_chat_reaction.objects.filter(
+                message=message,
+                reactor=request.user
+            ).select_for_update().first()
+
+            if reaction:
+                current_emoji = '❤️' if reaction.emoji == '\u2764' else reaction.emoji
+                if current_emoji == emoji:
+                    reaction.delete()
+                    action = "removed"
+                    my_reaction = None
+                else:
+                    reaction.emoji = emoji
+                    reaction.save(update_fields=['emoji'])
+                    action = "changed"
+                    my_reaction = emoji
+            else:
+                try:
+                    tbl_chat_reaction.objects.create(
+                        message=message,
+                        reactor=request.user,
+                        emoji=emoji
+                    )
+                    action = "added"
+                    my_reaction = emoji
+                except IntegrityError:
+                    # Caught concurrent insert
+                    reaction = tbl_chat_reaction.objects.filter(
+                        message=message,
+                        reactor=request.user
+                    ).first()
+                    if reaction:
+                        current_emoji = '❤️' if reaction.emoji == '\u2764' else reaction.emoji
+                        if current_emoji == emoji:
+                            reaction.delete()
+                            action = "removed"
+                            my_reaction = None
+                        else:
+                            reaction.emoji = emoji
+                            reaction.save(update_fields=['emoji'])
+                            action = "changed"
+                            my_reaction = emoji
+
+        # Step 6: Compute counts
+        counts = {'❤️': 0, '👍': 0, '😂': 0, '😢': 0, '😮': 0}
+        for r in tbl_chat_reaction.objects.filter(message=message):
+            e = '❤️' if r.emoji == '\u2764' else r.emoji
+            if e in counts:
+                counts[e] += 1
+
+        return Response({
+            "message": "Reaction updated.",
+            "action": action,
+            "data": {
+                "message_id": str(message.chat_message_id),
+                "my_reaction": my_reaction,
+                "reaction_counts": counts
+            }
+        }, status=status.HTTP_200_OK)
+
+    def throttled(self, request, wait):
+        raise Throttled(detail=_get_throttle_message(wait))
+
+
+# ─────────────────────────────────────────────
 # GET /api/v1/chat/thread/<uuid:partner_id>/
 # ─────────────────────────────────────────────
 
@@ -133,6 +411,7 @@ class ChatMessageView(generics.ListAPIView):
     Retrieves the paginated two-way conversation thread
     between the authenticated user and a specific partner.
     Oldest messages first (top-to-bottom reading order).
+    Uses prefetch_related on reactions to prevent N+1 queries.
     """
     permission_classes = [IsAuthenticated]
     throttle_classes = [ChatMessageThrottle]
@@ -151,7 +430,7 @@ class ChatMessageView(generics.ListAPIView):
             Q(sender_id=current_user, receiver_id=partner_id) |
             Q(sender_id=partner_id, receiver_id=current_user),
             is_deleted=False
-        ).select_related('sender_id', 'receiver_id').order_by('createdAt')
+        ).select_related('sender_id', 'receiver_id').prefetch_related('reactions').order_by('createdAt')
 
     def throttled(self, request, wait):
         raise Throttled(detail=_get_throttle_message(wait))
@@ -217,18 +496,27 @@ class ChatInboxView(generics.GenericAPIView):
             partner_profile_image = None
             public_id = getattr(partner, 'profile_link', None)
             if public_id:
-                partner_profile_image, _ = cloudinary.utils.cloudinary_url(
-                    public_id,
-                    type="authenticated",
-                    sign_url=True
-                )
+                try:
+                    partner_profile_image, _ = cloudinary.utils.cloudinary_url(
+                        public_id,
+                        type="authenticated",
+                        sign_url=True
+                    )
+                except Exception:
+                    partner_profile_image = None
+
+            # Format preview text for text vs image messages
+            if last_msg.message_type == 'image':
+                last_message_text = f"📷 {last_msg.message_payload}" if last_msg.message_payload else "📷 Photo"
+            else:
+                last_message_text = last_msg.message_payload or ""
 
             inbox.append({
                 'partner_id': partner.id,
                 'partner_name': f"{partner.first_name} {partner.last_name}".strip(),
                 'partner_account_type': partner.account_type,
                 'partner_profile_link': public_id,
-                'last_message': last_msg.message_payload,
+                'last_message': last_message_text,
                 'last_message_time': last_msg.createdAt,
                 'unread_count': unread_count,
             })

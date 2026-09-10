@@ -40,6 +40,14 @@ class EncryptedTextField(models.TextField):
         return _get_cipher().encrypt(value.encode('utf-8')).decode('utf-8')
 
 
+MESSAGE_TYPE_CHOICES = [
+    ('text', 'Text'),
+    ('image', 'Image'),
+]
+
+ALLOWED_EMOJIS = {'❤️', '👍', '😂', '😢', '😮'}
+
+
 class tbl_chat_message(models.Model):
     chat_message_id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     
@@ -66,10 +74,22 @@ class tbl_chat_message(models.Model):
         blank=True
     )
 
+    message_type = models.CharField(
+        max_length=10,
+        choices=MESSAGE_TYPE_CHOICES,
+        default='text'
+    )
+
+    image_public_id = models.CharField(
+        max_length=500,
+        blank=True,
+        null=True
+    )
+
     message_payload = EncryptedTextField(
         max_length=500,
-        blank=False,
-        null=False
+        blank=True,
+        null=True
     )
 
     is_read = models.BooleanField(
@@ -92,8 +112,47 @@ class tbl_chat_message(models.Model):
             ),
 
             CheckConstraint(
-                condition=RawSQL("length(trim(message_payload)) > 0", [], 
-                output_field=models.BooleanField()),
+                condition=(
+                    Q(message_type='image') |
+                    RawSQL("length(trim(message_payload)) > 0", [], output_field=models.BooleanField())
+                ),
                 name='message_payload_not_empty_or_whitespace'
+            ),
+
+            CheckConstraint(
+                condition=(
+                    Q(message_type='image') |
+                    Q(image_public_id__isnull=True)
+                ),
+                name='text_message_cannot_have_image_public_id'
+            ),
+        ]
+
+
+class tbl_chat_reaction(models.Model):
+    reaction_id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+
+    message = models.ForeignKey(
+        tbl_chat_message,
+        on_delete=models.CASCADE,
+        related_name='reactions',
+        db_column='message_id'
+    )
+    reactor = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='chat_reactions',
+        db_column='reactor_id'
+    )
+    emoji = models.CharField(max_length=10)
+    reacted_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'tbl_chat_reaction'
+        constraints = [
+            models.UniqueConstraint(
+                fields=['message', 'reactor'],
+                name='one_reaction_per_user_per_message'
             )
         ]
+
