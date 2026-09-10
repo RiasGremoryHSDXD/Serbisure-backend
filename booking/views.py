@@ -1,4 +1,4 @@
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.throttling import UserRateThrottle
 from rest_framework.exceptions import Throttled, ValidationError, NotFound, PermissionDenied
 from core.utils import check_valid_uuid
@@ -18,6 +18,7 @@ from django.db.models import Q, Avg
 from decimal import Decimal, InvalidOperation
 from django.contrib.auth import get_user_model
 from notifications.services import send_in_app_notification
+from .wage_policy import get_minimum_daily_wage, get_monthly_equivalent, get_minimum_wage_info
 import math 
 
 User = get_user_model()
@@ -420,24 +421,51 @@ class BookingProposalCreateView(APIView):
         except tbl_booking.DoesNotExist:
             return Response({'error': 'Booking not found.'}, status=status.HTTP_404_NOT_FOUND)
 
+        if getattr(request.user, 'verification_status', None) != 'Verified':
+            return Response({'error': 'Only verified users can submit counter-offer proposals.'}, status=status.HTTP_403_FORBIDDEN)
+
         if booking.poster_id == request.user:
             return Response({'error': 'You cannot make a proposal on your own booking.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if getattr(booking.poster_id, 'account_type', None) == request.user.account_type:
+            return Response({'error': f'You cannot make a proposal on a booking created by another {request.user.account_type}.'}, status=status.HTTP_400_BAD_REQUEST)
 
         if booking.booking_status != 'Pending':
             return Response({'error': 'Proposals can only be submitted for Pending bookings.'}, status=status.HTTP_400_BAD_REQUEST)
 
+        # Anti-spam: check if user already has a pending proposal for this booking
+        if tbl_booking_proposal.objects.filter(booking_id=booking, proposer_id=request.user, status='Pending').exists():
+            return Response({'error': 'You already have an active pending proposal for this booking. Please wait for the other party to respond.'}, status=status.HTTP_400_BAD_REQUEST)
+
         proposed_rate = request.data.get('proposed_rate')
-        message = request.data.get('message', '')
+        message = str(request.data.get('message', '') or '').strip()
+
+        if len(message) > 500:
+            return Response({'error': 'Proposal message cannot exceed 500 characters.'}, status=status.HTTP_400_BAD_REQUEST)
 
         if not proposed_rate:
             return Response({'error': 'Proposed rate is required.'}, status=status.HTTP_400_BAD_REQUEST)
 
         try:
             rate_val = Decimal(str(proposed_rate))
-            if rate_val < Decimal('1.00'):
+            if not rate_val.is_finite() or rate_val < Decimal('1.00') or rate_val > Decimal('999999.99'):
                 raise ValueError
+            rate_val = rate_val.quantize(Decimal('0.01'))
         except Exception:
-            return Response({'error': 'Proposed rate must be a valid amount of at least 1.00.'}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({'error': 'Proposed rate must be a valid amount between ₱1.00 and ₱999,999.99.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Enforce statutory minimum wage if booking is long_term (Batas Kasambahay RA 10361)
+        if booking.booking_type == 'long_term':
+            full_address = f"{booking.service_address or ''} {booking.zip_code or ''}"
+            min_wage = get_minimum_daily_wage('long_term', full_address)
+            if rate_val < min_wage:
+                approx_monthly = get_monthly_equivalent(min_wage)
+                return Response({
+                    'error': (
+                        f"Proposed rate for long-term domestic service cannot be below the legal minimum wage "
+                        f"of ₱{min_wage:.2f}/day (approx. ₱{approx_monthly:,.2f}/month under Batas Kasambahay RA 10361)."
+                    )
+                }, status=status.HTTP_400_BAD_REQUEST)
 
         proposal = tbl_booking_proposal.objects.create(
             booking_id=booking,
@@ -664,3 +692,23 @@ class BookingRecommendationsView(APIView):
             'recommendations': recommendations,
             'count': len(recommendations)
         }, status=status.HTTP_200_OK)
+
+
+class BookingMinimumWageView(APIView):
+    """
+    Returns statutory minimum wage rules and guidelines for long-term and short-term bookings
+    under Batas Kasambahay (Republic Act No. 10361).
+    """
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        raw_type = request.query_params.get('booking_type', 'long_term')
+        booking_type = str(raw_type or '').strip().lower()
+        if booking_type not in ['long_term', 'short_term']:
+            return Response(
+                {'error': "Invalid booking_type. Must be either 'long_term' or 'short_term'."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        address = str(request.query_params.get('address', '') or '').strip()
+        info = get_minimum_wage_info(booking_type, address)
+        return Response(info, status=status.HTTP_200_OK)
