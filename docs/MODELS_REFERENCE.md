@@ -37,6 +37,7 @@ This document outlines the database schema, models, field types, and choices (en
 | `account_type` | `CharField` | Choices: ['Kasambahay', 'Homeowner', 'Barangay', 'Admin'] |
 | `contact_number` | `CharField` | - |
 | `show_contact_number` | `BooleanField` | - |
+| `is_on_job` | `BooleanField` | - |
 | `user_about` | `TextField` | Blank=True |
 | `user_tags` | `JSONField` | Blank=True |
 | `social_links` | `JSONField` | Blank=True |
