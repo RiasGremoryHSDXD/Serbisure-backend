@@ -1,5 +1,7 @@
 from rest_framework import serializers
+from decimal import Decimal
 from .models import tbl_booking, tbl_booking_assignment, tbl_booking_proposal
+from .wage_policy import get_minimum_daily_wage, get_monthly_equivalent
 from django.utils import timezone
 from reviews.models import tbl_review
 from django.db.models import Avg
@@ -56,6 +58,47 @@ class BookingSerializer(serializers.ModelSerializer):
 
         if (start_time and end_time) and end_time <= start_time:
             raise serializers.ValidationError({"end_time": "End time must be strictly after the start time."})
+
+        # Batas Kasambahay (RA 10361) statutory minimum wage enforcement for long-term services
+        booking_type = data.get('booking_type') or (self.instance.booking_type if self.instance else None)
+        daily_rate = data.get('daily_rate') if 'daily_rate' in data else (self.instance.daily_rate if self.instance else None)
+        service_address = data.get('service_address') or (self.instance.service_address if self.instance else '')
+        zip_code = data.get('zip_code') or (self.instance.zip_code if self.instance else '')
+        full_address = f"{service_address} {zip_code}"
+
+        if daily_rate is not None:
+            if not isinstance(daily_rate, Decimal):
+                try:
+                    daily_rate = Decimal(str(daily_rate))
+                except Exception:
+                    raise serializers.ValidationError({"daily_rate": "Daily rate must be a valid number."})
+
+            if not daily_rate.is_finite() or daily_rate < Decimal('1.00'):
+                raise serializers.ValidationError({"daily_rate": "Daily rate must be at least ₱1.00."})
+
+            if daily_rate > Decimal('999999.99'):
+                raise serializers.ValidationError({"daily_rate": "Daily rate cannot exceed ₱999,999.99."})
+
+            if booking_type == 'long_term':
+                min_wage = get_minimum_daily_wage('long_term', full_address)
+                if daily_rate < min_wage:
+                    approx_monthly = get_monthly_equivalent(min_wage)
+                    raise serializers.ValidationError({
+                        "daily_rate": (
+                            f"Under Batas Kasambahay (RA 10361), the minimum daily wage for long-term "
+                            f"domestic service in this region is ₱{min_wage:.2f}/day (approx. ₱{approx_monthly:,.2f}/month)."
+                        )
+                    })
+
+        # Sanity check: Long-term domestic service duration cannot be under 24 hours
+        if booking_type == 'long_term' and start_time and end_time:
+            if (end_time - start_time).total_seconds() < 86400:
+                raise serializers.ValidationError({
+                    "booking_type": (
+                        "Long-term bookings are for ongoing domestic employment lasting multiple days or months. "
+                        "For tasks or shifts under 24 hours, please select Short-term."
+                    )
+                })
 
         return data
 
