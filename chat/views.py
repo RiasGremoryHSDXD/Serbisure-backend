@@ -19,6 +19,7 @@ from .serializers import (
     MarkMessageReadSerializer
 )
 import math
+import re
 import cloudinary.utils
 import cloudinary.uploader
 
@@ -382,7 +383,7 @@ class ReactMessageView(generics.GenericAPIView):
                             my_reaction = emoji
 
         # Step 6: Compute counts
-        counts = {'❤️': 0, '👍': 0, '😂': 0, '😢': 0, '😮': 0}
+        counts = {e: 0 for e in ALLOWED_EMOJIS}
         for r in tbl_chat_reaction.objects.filter(message=message):
             e = '❤️' if r.emoji == '\u2764' else r.emoji
             if e in counts:
@@ -431,6 +432,34 @@ class ChatMessageView(generics.ListAPIView):
             Q(sender_id=partner_id, receiver_id=current_user),
             is_deleted=False
         ).select_related('sender_id', 'receiver_id').prefetch_related('reactions').order_by('createdAt')
+
+    def list(self, request, *args, **kwargs):
+        partner_id = self.kwargs.get('partner_id')
+        if partner_id and check_valid_uuid(str(partner_id)):
+            tbl_chat_message.objects.filter(
+                sender_id=partner_id,
+                receiver_id=request.user,
+                is_read=False,
+                is_deleted=False
+            ).update(is_read=True)
+
+        queryset = self.filter_queryset(self.get_queryset())
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            response = self.get_paginated_response(serializer.data)
+        else:
+            serializer = self.get_serializer(queryset, many=True)
+            response = Response({"data": serializer.data})
+
+        if partner_id and check_valid_uuid(str(partner_id)):
+            cache_key = f'chat_typing_{partner_id}_{request.user.id}'
+            is_partner_typing = bool(cache.get(cache_key))
+            if isinstance(response.data, dict):
+                response.data['partner_is_typing'] = is_partner_typing
+            response['X-Partner-Is-Typing'] = 'true' if is_partner_typing else 'false'
+
+        return response
 
     def throttled(self, request, wait):
         raise Throttled(detail=_get_throttle_message(wait))
@@ -492,6 +521,12 @@ class ChatInboxView(generics.GenericAPIView):
                 is_deleted=False
             ).count()
 
+            sent_count = tbl_chat_message.objects.filter(
+                sender_id=current_user,
+                receiver_id=partner,
+                is_deleted=False
+            ).count()
+
             # Step 4: Build Cloudinary signed URL if partner has profile image
             partner_profile_image = None
             public_id = getattr(partner, 'profile_link', None)
@@ -509,7 +544,14 @@ class ChatInboxView(generics.GenericAPIView):
             if last_msg.message_type == 'image':
                 last_message_text = f"📷 {last_msg.message_payload}" if last_msg.message_payload else "📷 Photo"
             else:
-                last_message_text = last_msg.message_payload or ""
+                raw_payload = last_msg.message_payload or ""
+                # Strip markdown reply quotes like '> [Name]: quoted\n\nActual message'
+                match = re.match(r'^> \[[^\]]+\]:\s*.*?\n\n([\s\S]*)$', raw_payload)
+                clean_payload = match.group(1).strip() if match else raw_payload
+                if last_msg.sender_id == current_user:
+                    last_message_text = f"You: {clean_payload}" if clean_payload else "You sent a message"
+                else:
+                    last_message_text = clean_payload or ""
 
             inbox.append({
                 'partner_id': partner.id,
@@ -519,6 +561,7 @@ class ChatInboxView(generics.GenericAPIView):
                 'last_message': last_message_text,
                 'last_message_time': last_msg.createdAt,
                 'unread_count': unread_count,
+                'sent_count': sent_count,
             })
 
         # Step 5: Sort inbox by most recent message
@@ -585,3 +628,76 @@ class MarkMessageReadView(generics.UpdateAPIView):
 
     def throttled(self, request, wait):
         raise Throttled(detail=_get_throttle_message(wait))
+
+
+# ─────────────────────────────────────────────
+# DELETE /api/v1/chat/message/<uuid:message_id>/
+# ─────────────────────────────────────────────
+
+class DeleteChatMessageView(generics.GenericAPIView):
+    """
+    Deletes / unsends a message in the conversation.
+    Participants (sender or receiver) can delete.
+    Sets is_deleted=True.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def delete(self, request, message_id, *args, **kwargs):
+        clean_id = str(message_id).strip().rstrip('/')
+
+        # If it's a temp/mock client ID (not a valid UUID), treat as successfully handled
+        if not clean_id or not check_valid_uuid(clean_id):
+            return Response({
+                "message": "Message removed.",
+                "data": {"message_id": str(clean_id)}
+            }, status=status.HTTP_200_OK)
+
+        try:
+            message = tbl_chat_message.objects.get(chat_message_id=clean_id, is_deleted=False)
+        except tbl_chat_message.DoesNotExist:
+            # Idempotent response: If already deleted or not found, return 200 OK so client does not error
+            return Response({
+                "message": "Message already deleted or removed.",
+                "data": {"message_id": str(clean_id)}
+            }, status=status.HTTP_200_OK)
+
+        # Authorization guard: Only participants can delete
+        if request.user.id not in (message.sender_id_id, message.receiver_id_id):
+            return Response(
+                {"detail": "You are not authorized to delete this message."},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        message.is_deleted = True
+        message.save(update_fields=['is_deleted'])
+
+        return Response({
+            "message": "Message deleted successfully.",
+            "data": {
+                "message_id": str(clean_id)
+            }
+        }, status=status.HTTP_200_OK)
+
+
+# ─────────────────────────────────────────────
+# POST /api/v1/chat/typing/
+# ─────────────────────────────────────────────
+
+class ChatTypingView(generics.GenericAPIView):
+    """
+    Broadcasts typing indicator status to conversation partner.
+    Cached with short TTL (5 seconds).
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, *args, **kwargs):
+        partner_id = request.data.get('partner_id')
+        is_typing = request.data.get('is_typing', True)
+        if partner_id and check_valid_uuid(str(partner_id)):
+            cache_key = f'chat_typing_{request.user.id}_{partner_id}'
+            if is_typing:
+                cache.set(cache_key, True, timeout=5)
+            else:
+                cache.delete(cache_key)
+        return Response({"status": "ok"}, status=status.HTTP_200_OK)
+

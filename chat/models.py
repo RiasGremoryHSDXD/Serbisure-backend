@@ -45,7 +45,7 @@ MESSAGE_TYPE_CHOICES = [
     ('image', 'Image'),
 ]
 
-ALLOWED_EMOJIS = {'❤️', '👍', '😂', '😢', '😮'}
+ALLOWED_EMOJIS = {'❤️', '👍', '😂', '😢', '😭', '😮', '😱', '😜', '😡'}
 
 
 class tbl_chat_message(models.Model):
