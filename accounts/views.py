@@ -627,7 +627,9 @@ class DeleteAccountView(APIView):
         user = request.user
         user.is_active = False
         user.user_about = '[Account Deactivated]'
-        user.contact_number = '+639000000000'
+        # Anonymize contact number collision-free using user.id hash while respecting ^\+639\d{9}$
+        unique_suffix = f"{int(user.id.hex[:8], 16) % 900000000 + 100000000}"
+        user.contact_number = f"+639{unique_suffix}"
         user.user_tags = []
         user.save()
 

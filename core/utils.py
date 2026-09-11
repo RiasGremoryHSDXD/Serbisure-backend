@@ -1,3 +1,4 @@
+import re
 import uuid
 
 def convert_title(text):
@@ -47,3 +48,40 @@ def check_valid_uuid(id):
         return True
     except ValueError:
         return False
+
+
+def normalize_ph_phone_number(val):
+    """
+    Standardizes and normalizes any Philippine phone number variation into 
+    canonical E.164 format (+639XXXXXXXXX).
+    
+    Accepts:
+        - '+639123456789' (E.164 standard, 13 chars)
+        - '09123456789'   (Standard PH local mobile, 11 chars)
+        - '639123456789'  (International without +, 12 chars)
+        - '9123456789'    (10-digit mobile number)
+        - Numbers containing spaces, hyphens, or parentheses (e.g., '+63 912-345-6789')
+        
+    Returns:
+        str: '+639XXXXXXXXX' (13 characters) if valid, or None if invalid.
+    """
+    if not val:
+        return None
+
+    raw = str(val).strip()
+    # Strip spaces, dashes, parentheses, dots
+    cleaned = re.sub(r'[\s\-\(\)\.]', '', raw)
+
+    if cleaned.startswith('09') and len(cleaned) == 11 and cleaned[1:].isdigit():
+        return '+63' + cleaned[1:]
+    elif cleaned.startswith('639') and len(cleaned) == 12 and cleaned.isdigit():
+        return '+' + cleaned
+    elif cleaned.startswith('+639') and len(cleaned) == 13 and cleaned[1:].isdigit():
+        return cleaned
+    elif cleaned.startswith('9') and len(cleaned) == 10 and cleaned.isdigit():
+        return '+63' + cleaned
+    elif cleaned.startswith('+6309') and len(cleaned) == 14 and cleaned[1:].isdigit():
+        return '+63' + cleaned[4:]
+
+    return None
+

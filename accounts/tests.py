@@ -21,13 +21,14 @@ Run a single class:
 """
 
 from django.test import TestCase
-from rest_framework.test import APIClient
+from rest_framework.test import APIClient, APITestCase
 from rest_framework import status
 from django.core.cache import cache
 from django.urls import reverse
 from django.core.files.uploadedfile import SimpleUploadedFile
 from unittest.mock import patch
 from .models import tbl_user_profile
+User = tbl_user_profile
 from .serializers import UserRegistrationSerializer
 import uuid
 
@@ -94,6 +95,58 @@ class TestUserModels(TestCase):
             contact_number="+639123456789"
         )
         self.assertEqual(user.user_about, "No Bio")
+
+    def test_duplicate_contact_number_raises_integrity_error(self):
+        """
+        GIVEN  an existing user with contact_number '+639111111111'
+        WHEN   attempting to create another user with the exact same contact_number
+        THEN   django.db.utils.IntegrityError is raised by the DB unique constraint.
+        """
+        from django.db import IntegrityError
+        tbl_user_profile.objects.create_user(
+            username="phone_dup1",
+            email="phone_dup1@example.com",
+            password="Password123!",
+            contact_number="+639111111111"
+        )
+        with self.assertRaises(IntegrityError):
+            tbl_user_profile.objects.create_user(
+                username="phone_dup2",
+                email="phone_dup2@example.com",
+                password="Password123!",
+                contact_number="+639111111111"
+            )
+
+    def test_model_save_auto_normalizes_local_phone_to_e164(self):
+        """
+        GIVEN  a user model instantiated with local 09 format '09511234568'
+        WHEN   save() is called
+        THEN   contact_number is automatically normalized to '+639511234568'.
+        """
+        user = tbl_user_profile.objects.create_user(
+            username="norm_test",
+            email="norm_test@example.com",
+            password="Password123!",
+            contact_number="09511234568"
+        )
+        user.refresh_from_db()
+        self.assertEqual(user.contact_number, "+639511234568")
+
+    def test_invalid_contact_number_fails_clean_validation(self):
+        """
+        GIVEN  a user with an invalid contact number e.g. '12345'
+        WHEN   full_clean() is called
+        THEN   django.core.exceptions.ValidationError is raised.
+        """
+        from django.core.exceptions import ValidationError
+        user = tbl_user_profile(
+            username="bad_phone",
+            email="bad_phone@example.com",
+            contact_number="12345"
+        )
+        user.set_password("Password123!")
+        with self.assertRaises(ValidationError):
+            user.full_clean()
 
 
 # =============================================================================
@@ -263,6 +316,37 @@ class TestSerializers(TestCase):
         serializer = UserRegistrationSerializer(data=self.valid_data)
         self.assertTrue(serializer.is_valid(), serializer.errors)
 
+    def test_contact_number_local_format_auto_normalized_to_e164(self):
+        """
+        GIVEN  contact_number submitted as '09123456789'
+        WHEN   serializer saves the user
+        THEN   contact_number is saved as canonical '+639123456789'.
+        """
+        self.valid_data["contact_number"] = "09123456789"
+        serializer = UserRegistrationSerializer(data=self.valid_data)
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        user = serializer.save()
+        self.assertEqual(user.contact_number, "+639123456789")
+
+    def test_contact_number_duplicate_rejected_by_serializer(self):
+        """
+        GIVEN  an existing user with contact_number '+639123456789'
+        WHEN   a new registration attempts to use the same number in any format (e.g. '09123456789')
+        THEN   serializer is invalid and returns a friendly error message.
+        """
+        tbl_user_profile.objects.create_user(
+            username="existing_phone_user",
+            email="existing_phone@example.com",
+            password="Password123!",
+            contact_number="+639123456789"
+        )
+        self.valid_data["email"] = "brand_new_user@example.com"
+        self.valid_data["contact_number"] = "09123456789"
+        serializer = UserRegistrationSerializer(data=self.valid_data)
+        self.assertFalse(serializer.is_valid())
+        self.assertIn("contact_number", serializer.errors)
+        self.assertIn("already registered", str(serializer.errors["contact_number"]))
+
     # ── EMAIL ─────────────────────────────────────────────────────────────────
 
     def test_email_is_normalized_to_lowercase(self):
@@ -345,23 +429,25 @@ class TestUserAPIEndpoints(TestCase):
         self,
         email="testuser@example.com",
         password="StrongPassword123!",
-        username="testuser"
+        username="testuser",
+        contact_number=None
     ):
         """
         Helper that bypasses the registration endpoint and directly creates
         a user in the DB, then logs in to get a real JWT access token.
 
         Returns: (user_instance, access_token_string)
-
-        Why use this instead of the register endpoint?
-        Keeps tests focused: user-about and user-tags tests don't care about
-        registration logic — they only need an authenticated token.
         """
+        if not contact_number:
+            import hashlib
+            h = int(hashlib.md5(email.encode('utf-8')).hexdigest()[:8], 16) % 900000000 + 100000000
+            contact_number = f"+639{h}"
+
         user = tbl_user_profile.objects.create_user(
             username=username,
             email=email,
             password=password,
-            contact_number="+639123456789"
+            contact_number=contact_number
         )
         response = self.client.post(self.login_url, {
             "email": email,
@@ -566,6 +652,189 @@ class TestUserAPIEndpoints(TestCase):
             "password": "WrongPassword!"
         })
         self.assertEqual(response6.status_code, status.HTTP_429_TOO_MANY_REQUESTS)
+
+    def test_login_with_contact_number_e164_format(self):
+        """
+        GIVEN  a registered user with contact_number '+639518859238'
+        WHEN   POST /login/ with email='+639518859238' and correct password
+        THEN   200 OK, body has 'access' and 'refresh' tokens.
+        """
+        tbl_user_profile.objects.create_user(
+            username="phoneuser1",
+            email="phoneuser1@example.com",
+            password="password123!",
+            contact_number="+639518859238"
+        )
+        response = self.client.post(self.login_url, {
+            "email": "+639518859238",
+            "password": "password123!"
+        })
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn("access", response.data)
+        self.assertIn("refresh", response.data)
+
+    def test_login_with_contact_number_local_09_format(self):
+        """
+        GIVEN  a registered user with contact_number '+639518859239'
+        WHEN   POST /login/ with email='09518859239' (local 09 format)
+        THEN   200 OK, auto-normalized to E.164 and authenticated.
+        """
+        tbl_user_profile.objects.create_user(
+            username="phoneuser2",
+            email="phoneuser2@example.com",
+            password="password123!",
+            contact_number="+639518859239"
+        )
+        response = self.client.post(self.login_url, {
+            "email": "09518859239",
+            "password": "password123!"
+        })
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn("access", response.data)
+
+    def test_login_with_contact_number_identifier_field(self):
+        """
+        GIVEN  a user logging in with 'identifier' field instead of 'email'
+        WHEN   POST /login/ with identifier='09518859240'
+        THEN   200 OK.
+        """
+        tbl_user_profile.objects.create_user(
+            username="phoneuser3",
+            email="phoneuser3@example.com",
+            password="password123!",
+            contact_number="+639518859240"
+        )
+        response = self.client.post(self.login_url, {
+            "identifier": "09518859240",
+            "password": "password123!"
+        })
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn("access", response.data)
+
+    def test_login_with_hyphenated_contact_number(self):
+        """
+        GIVEN  user types '0951-885-9241' with dashes
+        WHEN   POST /login/
+        THEN   200 OK — punctuation stripped and normalized.
+        """
+        tbl_user_profile.objects.create_user(
+            username="phoneuser4",
+            email="phoneuser4@example.com",
+            password="password123!",
+            contact_number="+639518859241"
+        )
+        response = self.client.post(self.login_url, {
+            "email": "0951-885-9241",
+            "password": "password123!"
+        })
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn("access", response.data)
+
+    def test_register_duplicate_contact_number_rejected(self):
+        """
+        GIVEN  an already registered contact_number
+        WHEN   another registration attempt uses the exact same number (even in different format '09...')
+        THEN   400 Bad Request with error on 'contact_number'.
+        """
+        self.client.post(
+            self.register_url,
+            self.valid_payload,
+            HTTP_IDEMPOTENCY_KEY=str(uuid.uuid4())
+        )
+        dup_payload = self.valid_payload.copy()
+        dup_payload["email"] = "different_email@example.com"
+        # Same phone number in 09 format
+        dup_payload["contact_number"] = "09123456789"
+
+        response = self.client.post(
+            self.register_url,
+            dup_payload,
+            HTTP_IDEMPOTENCY_KEY=str(uuid.uuid4())
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("contact_number", response.data)
+
+    def test_deactivated_account_has_unique_contact_number(self):
+        """
+        GIVEN  an active user that deactivates their account via /delete-account/
+        WHEN   the account is deactivated
+        THEN   the contact number is anonymized to a unique valid format (+639...)
+               and does not collide with other deactivated accounts.
+        """
+        user1, token1 = self._create_and_login_user(
+            email="deact1@example.com",
+            username="deact1",
+            contact_number="+639511111111"
+        )
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {token1}")
+        resp1 = self.client.post("/api/v1/accounts/delete-account/", {"password": "StrongPassword123!"})
+        self.assertEqual(resp1.status_code, status.HTTP_200_OK)
+
+        user1.refresh_from_db()
+        self.assertFalse(user1.is_active)
+        self.assertTrue(user1.contact_number.startswith("+639"))
+
+        # Create second user and deactivate — must NOT collide with user1
+        self.client.credentials()
+        user2, token2 = self._create_and_login_user(
+            email="deact2@example.com",
+            username="deact2",
+            contact_number="+639522222222"
+        )
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {token2}")
+        resp2 = self.client.post("/api/v1/accounts/delete-account/", {"password": "StrongPassword123!"})
+        self.assertEqual(resp2.status_code, status.HTTP_200_OK)
+
+        user2.refresh_from_db()
+        self.assertNotEqual(user1.contact_number, user2.contact_number)
+
+    def test_login_wrong_password_with_phone_returns_401(self):
+        """
+        GIVEN  a user registered with contact_number
+        WHEN   logging in with their phone number but wrong password
+        THEN   401 Unauthorized with generic error message (timing-safe).
+        """
+        tbl_user_profile.objects.create_user(
+            username="phone_wrong_pw",
+            email="phone_wrong_pw@example.com",
+            password="password123!",
+            contact_number="+639518859242"
+        )
+        response = self.client.post(self.login_url, {
+            "email": "09518859242",
+            "password": "IncorrectPassword!"
+        })
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_login_nonexistent_phone_returns_401(self):
+        """
+        GIVEN  a phone number not in the database
+        WHEN   POST /login/
+        THEN   401 Unauthorized (timing-safe).
+        """
+        response = self.client.post(self.login_url, {
+            "email": "09519999999",
+            "password": "RandomPassword123!"
+        })
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_login_admin_with_contact_number_blocked_from_mobile_api(self):
+        """
+        GIVEN  an Admin account with a contact number
+        WHEN   they try to login through the mobile API using their phone number
+        THEN   401 Unauthorized.
+        """
+        tbl_user_profile.objects.create_superuser(
+            username="admin_phone",
+            email="admin_phone@example.com",
+            password="AdminPassword123!",
+            contact_number="+639518859243"
+        )
+        response = self.client.post(self.login_url, {
+            "email": "09518859243",
+            "password": "AdminPassword123!"
+        })
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
 
     # ── USER ABOUT TESTS ──────────────────────────────────────────────────────
 
