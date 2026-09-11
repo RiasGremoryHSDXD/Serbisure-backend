@@ -176,8 +176,8 @@ REST_FRAMEWORK = {
 
 # JWT Token Rules
 SIMPLE_JWT = {
-    'ACCESS_TOKEN_LIFETIME': timedelta(minutes=60), # Access token last 1 hour
-    'REFRESH_TOKEN_LIFETIME': timedelta(days=7), # Refresh token last 1 week
+    'ACCESS_TOKEN_LIFETIME': timedelta(days=30), # Access token lasts 30 days for mobile session stability
+    'REFRESH_TOKEN_LIFETIME': timedelta(days=90), # Refresh token lasts 90 days
     'ROTATE_REFRESH_TOKENS': True, # Gives a new refresh token every time it is used
     'BLACKLIST_AFTER_ROTATION': True, # Destroys the old token after it is used
 }

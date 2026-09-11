@@ -9,6 +9,7 @@ from rest_framework.exceptions import AuthenticationFailed, ValidationError
 import uuid
 import re
 from urllib.parse import urlparse
+from django.db.models import Q
 
 class UserRegistrationSerializer(serializers.ModelSerializer):
     # This enrsure the password is required to create an account,
@@ -244,6 +245,7 @@ class CustomLoginSerializer(TokenObtainPairSerializer):
             attrs.get('identifier') or 
             attrs.get('email') or 
             attrs.get('contact_number') or 
+            attrs.get('username') or 
             ''
         ).strip()
         password = attrs.get('password', '')

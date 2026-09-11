@@ -171,7 +171,7 @@ class ReactMessageSerializer(serializers.Serializer):
         if val == '\u2764':
             val = '❤️'
         if val not in ALLOWED_EMOJIS:
-            raise serializers.ValidationError("Invalid emoji. Allowed emojis: ❤️ 👍 😂 😢 😮")
+            raise serializers.ValidationError(f"Invalid emoji. Allowed emojis: {' '.join(sorted(ALLOWED_EMOJIS))}")
         return val
 
 
@@ -224,7 +224,7 @@ class ChatMessageSerializer(serializers.ModelSerializer):
             return None
 
     def get_reaction_summary(self, obj):
-        counts = {'❤️': 0, '👍': 0, '😂': 0, '😢': 0, '😮': 0}
+        counts = {e: 0 for e in ALLOWED_EMOJIS}
         try:
             for r in obj.reactions.all():
                 emoji = '❤️' if r.emoji == '\u2764' else r.emoji
@@ -258,6 +258,7 @@ class ChatInboxSerializer(serializers.Serializer):
     last_message = serializers.CharField(allow_blank=True, allow_null=True)
     last_message_time = serializers.DateTimeField()
     unread_count = serializers.IntegerField(default=0)
+    sent_count = serializers.IntegerField(default=0)
 
     def get_partner_profile_image(self, obj):
         public_id = obj.get('partner_profile_link')
