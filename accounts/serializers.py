@@ -1,7 +1,9 @@
 from rest_framework import serializers
+from django.db import IntegrityError
+from django.db.models import Q
 from .models import tbl_user_profile
 from datetime import date
-from core.utils import convert_title, check_input_letters
+from core.utils import convert_title, check_input_letters, normalize_ph_phone_number
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from rest_framework.exceptions import AuthenticationFailed, ValidationError
 import uuid
@@ -15,6 +17,7 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
 
     password = serializers.CharField(write_only=True, trim_whitespace=False)
     verification_status = serializers.CharField(read_only=True)
+    contact_number = serializers.CharField(max_length=25, required=True)
 
     class Meta: 
         model = tbl_user_profile
@@ -57,11 +60,18 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
 
         validated_data['username'] = f"{combined}_{random_suffix}"
 
-        user = tbl_user_profile(**validated_data)
-        user.set_password(password)
-        user.save()
-
-        return user
+        try:
+            user = tbl_user_profile(**validated_data)
+            user.set_password(password)
+            user.save()
+            return user
+        except IntegrityError as e:
+            err_str = str(e).lower()
+            if 'contact_number' in err_str:
+                raise serializers.ValidationError({"contact_number": ["A user with this contact number is already registered."]})
+            elif 'email' in err_str:
+                raise serializers.ValidationError({"email": ["A user with this email address is already registered."]})
+            raise serializers.ValidationError({"detail": "An account with these details already exists."})
     
     # Mandatory Value in creating a account
     # def mandatory_field_account_creation(self, value):
@@ -136,27 +146,20 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
         return value
     
     def validate_email(self, value):
-        return value.lower()
+        val = value.strip().lower()
+        if tbl_user_profile.objects.filter(email__iexact=val).exists():
+            raise serializers.ValidationError("A user with this email address is already registered.")
+        return val
 
     def validate_contact_number(self, value):
-        if isinstance(value, str):
-            value = value.strip()
-            if value.startswith('09') and len(value) == 11:
-                value = '+63' + value[1:]
-            elif value.startswith('639') and len(value) == 12:
-                value = '+' + value
-            elif value.startswith('9') and len(value) == 10:
-                value = '+63' + value
-        if not value.startswith('+639'):
-            raise serializers.ValidationError("Contact number must strictly start with +63.")
+        normalized = normalize_ph_phone_number(value)
+        if not normalized:
+            raise serializers.ValidationError("Phone number must start with '+63' followed by 10 digits (e.g., +639123456789 or 09123456789).")
         
-        if len(value) != 13: 
-            raise serializers.ValidationError("Contact number must be exactly 13 characters long (e.g., +639123456789).")
-            
-        if not value[1:].isdigit():
-            raise serializers.ValidationError("Contact number must only contain numbers after the + sign.")
-            
-        return value
+        if tbl_user_profile.objects.filter(contact_number=normalized).exists():
+            raise serializers.ValidationError("A user with this contact number is already registered.")
+
+        return normalized
     
     @classmethod
     def get_token(cls, user):
@@ -193,6 +196,12 @@ class CustomLoginSerializer(TokenObtainPairSerializer):
     default_error_messages = {
         "no_active_account": "Wrong email or password. Please try again!"
     }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields['email'] = serializers.CharField(required=False, write_only=True)
+        self.fields['identifier'] = serializers.CharField(required=False, write_only=True)
+        self.fields['contact_number'] = serializers.CharField(required=False, write_only=True)
 
     @classmethod
     def get_token(cls, user):
@@ -232,40 +241,50 @@ class CustomLoginSerializer(TokenObtainPairSerializer):
         return token
     
     def validate(self, attrs):
-        username_key = self.username_field
-        raw_identifier = str(attrs.get(username_key) or attrs.get('username') or '').strip()
+        raw_identifier = (
+            attrs.get('identifier') or 
+            attrs.get('email') or 
+            attrs.get('contact_number') or 
+            attrs.get('username') or 
+            ''
+        ).strip()
+        password = attrs.get('password', '')
 
-        # If identifier does not have '@', try resolving phone number or username
-        if raw_identifier and '@' not in raw_identifier:
-            clean_digits = re.sub(r'\D', '', raw_identifier)
-            phone_variants = [raw_identifier]
+        if not raw_identifier:
+            raise serializers.ValidationError({"detail": "Please enter your email or contact number."})
+        if not password:
+            raise serializers.ValidationError({"detail": "Please enter your password."})
 
-            if clean_digits.startswith('09') and len(clean_digits) == 11:
-                phone_variants.append('+63' + clean_digits[1:])
-            elif clean_digits.startswith('9') and len(clean_digits) == 10:
-                phone_variants.append('+63' + clean_digits)
-            elif clean_digits.startswith('639') and len(clean_digits) == 12:
-                phone_variants.append('+' + clean_digits)
-            elif clean_digits.startswith('+639'):
-                phone_variants.append('0' + clean_digits[3:])
+        user = None
+        if '@' in raw_identifier:
+            user = tbl_user_profile.objects.filter(email__iexact=raw_identifier).first()
+        else:
+            normalized_phone = normalize_ph_phone_number(raw_identifier)
+            if normalized_phone:
+                user = tbl_user_profile.objects.filter(contact_number=normalized_phone).first()
+            if not user:
+                user = tbl_user_profile.objects.filter(
+                    Q(contact_number=raw_identifier) | Q(email__iexact=raw_identifier)
+                ).first()
 
-            user_match = tbl_user_profile.objects.filter(
-                Q(contact_number__in=phone_variants) | Q(username__iexact=raw_identifier)
-            ).first()
-
-            if user_match:
-                attrs[username_key] = user_match.email
-
-        # This will verify the email and password first
-        data = super().validate(attrs)
-
-        # self.user is populated if the email/password were correct
-        # We block 'Admin' and 'Barangay' accounts from logging into the mobile app
-        if self.user.account_type in ['Admin', 'Barangay'] or self.user.is_superuser or self.user.is_staff:
-            # We return the exact same generic error so attackers don't know it's an admin account
+        if user is None or not user.check_password(password):
+            from django.contrib.auth.hashers import check_password, make_password
+            check_password(password, make_password('dummy_timing_defense'))
             raise AuthenticationFailed("Wrong email or password. Please try again!")
 
-        return data
+        if not user.is_active:
+            raise AuthenticationFailed("This account has been deactivated or disabled.")
+
+        if user.account_type in ['Admin', 'Barangay'] or user.is_superuser or user.is_staff:
+            raise AuthenticationFailed("Wrong email or password. Please try again!")
+
+        self.user = user
+
+        refresh = self.get_token(user)
+        return {
+            "refresh": str(refresh),
+            "access": str(refresh.access_token),
+        }
 
 import cloudinary.uploader
 

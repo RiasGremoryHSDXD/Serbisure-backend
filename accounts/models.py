@@ -45,6 +45,12 @@ class CustomUserManager(BaseUserManager):
         
         email = self.normalize_email(email)
         desired_status = extra_fields.pop('verification_status', None)
+
+        if not extra_fields.get('contact_number'):
+            import hashlib
+            h = int(hashlib.md5(email.encode('utf-8')).hexdigest()[:8], 16) % 900000000 + 100000000
+            extra_fields['contact_number'] = f"+639{h}"
+
         user = self.model(email=email, **extra_fields)
         user.set_password(password)
         user.save(using=self._db)
@@ -306,6 +312,7 @@ class tbl_user_profile(AbstractUser):
 
     contact_number = models.CharField(
             max_length=13,
+            unique=True,
             blank=False,
             null=False,
             validators=[
@@ -314,7 +321,7 @@ class tbl_user_profile(AbstractUser):
                     message="Phone number must start with '+63' followed by 10 digits (e.g., +639123456789)."
                 )
             ],
-            help_text="User's contact phone number (e.g. +639123456789)"
+            help_text="User's unique contact phone number (e.g. +639123456789)"
         )
 
     show_contact_number = models.BooleanField(
@@ -352,6 +359,22 @@ class tbl_user_profile(AbstractUser):
         help_text="Controls if social links are visible to other users on public profile"
     )
 
+    def clean(self):
+        super().clean()
+        if self.contact_number:
+            from core.utils import normalize_ph_phone_number
+            normalized = normalize_ph_phone_number(self.contact_number)
+            if normalized:
+                self.contact_number = normalized
+
+    def save(self, *args, **kwargs):
+        if self.contact_number:
+            from core.utils import normalize_ph_phone_number
+            normalized = normalize_ph_phone_number(self.contact_number)
+            if normalized:
+                self.contact_number = normalized
+        super().save(*args, **kwargs)
+
     def __str__(self):
         return self.username
     
@@ -377,5 +400,15 @@ class tbl_user_profile(AbstractUser):
             CheckConstraint(
                 condition=RawSQL("jsonb_typeof(social_links) = 'array'", [], output_field=models.BooleanField()),
                 name='valid_social_links_must_be_array'
+            ),
+
+            models.UniqueConstraint(
+                fields=['contact_number'],
+                name='unique_tbl_user_profile_contact_number'
+            ),
+
+            CheckConstraint(
+                condition=Q(contact_number__regex=r'^\+639\d{9}$'),
+                name='valid_contact_number_e164_format'
             )
         ]
