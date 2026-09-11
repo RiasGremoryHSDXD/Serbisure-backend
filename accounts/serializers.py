@@ -7,6 +7,7 @@ from rest_framework.exceptions import AuthenticationFailed, ValidationError
 import uuid
 import re
 from urllib.parse import urlparse
+from django.db.models import Q
 
 class UserRegistrationSerializer(serializers.ModelSerializer):
     # This enrsure the password is required to create an account,
@@ -231,6 +232,30 @@ class CustomLoginSerializer(TokenObtainPairSerializer):
         return token
     
     def validate(self, attrs):
+        username_key = self.username_field
+        raw_identifier = str(attrs.get(username_key) or attrs.get('username') or '').strip()
+
+        # If identifier does not have '@', try resolving phone number or username
+        if raw_identifier and '@' not in raw_identifier:
+            clean_digits = re.sub(r'\D', '', raw_identifier)
+            phone_variants = [raw_identifier]
+
+            if clean_digits.startswith('09') and len(clean_digits) == 11:
+                phone_variants.append('+63' + clean_digits[1:])
+            elif clean_digits.startswith('9') and len(clean_digits) == 10:
+                phone_variants.append('+63' + clean_digits)
+            elif clean_digits.startswith('639') and len(clean_digits) == 12:
+                phone_variants.append('+' + clean_digits)
+            elif clean_digits.startswith('+639'):
+                phone_variants.append('0' + clean_digits[3:])
+
+            user_match = tbl_user_profile.objects.filter(
+                Q(contact_number__in=phone_variants) | Q(username__iexact=raw_identifier)
+            ).first()
+
+            if user_match:
+                attrs[username_key] = user_match.email
+
         # This will verify the email and password first
         data = super().validate(attrs)
 
