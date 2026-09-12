@@ -18,6 +18,8 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True, trim_whitespace=False)
     verification_status = serializers.CharField(read_only=True)
     contact_number = serializers.CharField(max_length=25, required=True)
+    user_about = serializers.CharField(max_length=500, required=False, allow_blank=True)
+    user_tags = serializers.ListField(child=serializers.CharField(max_length=25), required=False)
 
     class Meta: 
         model = tbl_user_profile
@@ -43,6 +45,8 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
             'password',
             'account_type',
             'verification_status', 
+            'user_about',
+            'user_tags',
         ]
 
     # We override the standard save method to ensure the password gets hashed
@@ -613,6 +617,7 @@ class PublicProfileSerializer(serializers.ModelSerializer):
             'user_tags',
             'city',
             'province',
+            'street',
             'date_joined',
             'social_links',
             'show_social_links',

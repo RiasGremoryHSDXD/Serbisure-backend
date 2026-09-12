@@ -26,6 +26,8 @@ def get_signed_avatar(user):
 
 
 class BookingSerializer(serializers.ModelSerializer):
+    zip_code = serializers.CharField(max_length=4, required=False, default='9000', allow_blank=True)
+
     class Meta:
         model = tbl_booking
         fields = [
@@ -63,7 +65,8 @@ class BookingSerializer(serializers.ModelSerializer):
         booking_type = data.get('booking_type') or (self.instance.booking_type if self.instance else None)
         daily_rate = data.get('daily_rate') if 'daily_rate' in data else (self.instance.daily_rate if self.instance else None)
         service_address = data.get('service_address') or (self.instance.service_address if self.instance else '')
-        zip_code = data.get('zip_code') or (self.instance.zip_code if self.instance else '')
+        zip_code = data.get('zip_code') or (self.instance.zip_code if self.instance else '9000')
+        data['zip_code'] = zip_code
         full_address = f"{service_address} {zip_code}"
 
         if daily_rate is not None:
