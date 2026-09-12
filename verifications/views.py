@@ -125,7 +125,7 @@ class UserVerificationStatusView(generics.GenericAPIView):
         if user.account_type == 'Kasambahay':
             required_docs = ['nbi_clearance', 'police_clearance']
         elif user.account_type == 'Homeowner':
-            required_docs = ['national_id_front', 'national_id_back']
+            required_docs = ['national_id_front']
         else:
             required_docs = []
 

@@ -617,6 +617,7 @@ class PublicProfileSerializer(serializers.ModelSerializer):
             'user_tags',
             'city',
             'province',
+            'street',
             'date_joined',
             'social_links',
             'show_social_links',

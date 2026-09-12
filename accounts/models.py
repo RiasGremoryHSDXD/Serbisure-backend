@@ -288,8 +288,10 @@ class tbl_user_profile(AbstractUser):
         }
 
         if self.account_type == 'Homeowner':
-            required = {'national_id_front', 'national_id_back'}
-            if required.issubset(verified_types):
+            # National ID front & back are merged into a single entry (national_id_front or national_id)
+            if 'national_id_front' in verified_types or 'national_id' in verified_types:
+                return 'Verified'
+            if {'national_id_front', 'national_id_back'}.issubset(verified_types):
                 return 'Verified'
         elif self.account_type == 'Kasambahay':
             required = {'nbi_clearance', 'police_clearance'}
