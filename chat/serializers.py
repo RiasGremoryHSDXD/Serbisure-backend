@@ -265,11 +265,20 @@ class ChatInboxSerializer(serializers.Serializer):
         if not public_id:
             return None
 
+        if str(public_id).startswith('http://') or str(public_id).startswith('https://'):
+            return str(public_id)
+
         try:
             temporary_url, _ = cloudinary.utils.cloudinary_url(
                 public_id,
                 type="authenticated",
-                sign_url=True
+                sign_url=True,
+                width=120,
+                height=120,
+                crop="fill",
+                gravity="face",
+                quality="auto",
+                fetch_format="auto"
             )
             return temporary_url
         except Exception:

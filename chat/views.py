@@ -452,12 +452,18 @@ class ChatMessageView(generics.ListAPIView):
             serializer = self.get_serializer(queryset, many=True)
             response = Response({"data": serializer.data})
 
+        if request.user and request.user.is_authenticated:
+            cache.set(f'user_active_{request.user.id}', True, timeout=12)
+
         if partner_id and check_valid_uuid(str(partner_id)):
             cache_key = f'chat_typing_{partner_id}_{request.user.id}'
             is_partner_typing = bool(cache.get(cache_key))
+            is_partner_online = bool(cache.get(f'user_active_{partner_id}'))
             if isinstance(response.data, dict):
                 response.data['partner_is_typing'] = is_partner_typing
+                response.data['partner_is_online'] = is_partner_online
             response['X-Partner-Is-Typing'] = 'true' if is_partner_typing else 'false'
+            response['X-Partner-Is-Online'] = 'true' if is_partner_online else 'false'
 
         return response
 
@@ -531,14 +537,23 @@ class ChatInboxView(generics.GenericAPIView):
             partner_profile_image = None
             public_id = getattr(partner, 'profile_link', None)
             if public_id:
-                try:
-                    partner_profile_image, _ = cloudinary.utils.cloudinary_url(
-                        public_id,
-                        type="authenticated",
-                        sign_url=True
-                    )
-                except Exception:
-                    partner_profile_image = None
+                if str(public_id).startswith('http://') or str(public_id).startswith('https://'):
+                    partner_profile_image = str(public_id)
+                else:
+                    try:
+                        partner_profile_image, _ = cloudinary.utils.cloudinary_url(
+                            public_id,
+                            type="authenticated",
+                            sign_url=True,
+                            width=120,
+                            height=120,
+                            crop="fill",
+                            gravity="face",
+                            quality="auto",
+                            fetch_format="auto"
+                        )
+                    except Exception:
+                        partner_profile_image = None
 
             # Format preview text for text vs image messages
             if last_msg.message_type == 'image':
