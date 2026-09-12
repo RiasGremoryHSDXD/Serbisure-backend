@@ -177,14 +177,70 @@ class AdminVerificationQueueSerializer(serializers.ModelSerializer):
     ocrDiscrepancies = serializers.JSONField(source='ocr_discrepancies', read_only=True)
     ocrMatchScore = serializers.FloatField(source='ocr_match_score', read_only=True)
 
+    # Package & Companion Document Fields
+    primaryStatus = serializers.SerializerMethodField()
+    isPackage = serializers.SerializerMethodField()
+    packageLabel = serializers.SerializerMethodField()
+    secondaryDocumentId = serializers.SerializerMethodField()
+    secondaryDocumentImage = serializers.SerializerMethodField()
+    secondaryDocumentType = serializers.SerializerMethodField()
+    secondaryDocumentNumber = serializers.SerializerMethodField()
+    secondaryIssuedDate = serializers.SerializerMethodField()
+    secondaryValidityDate = serializers.SerializerMethodField()
+    secondaryStatus = serializers.SerializerMethodField()
+    secondaryNotes = serializers.SerializerMethodField()
+    secondaryOcrData = serializers.SerializerMethodField()
+    secondaryOcrDiscrepancies = serializers.SerializerMethodField()
+
     class Meta:
         model = tbl_documents
         fields = [
             'id', 'name', 'role', 'avatar', 'documentType', 'rawDocumentType', 'documentNumber',
-            'submittedDate', 'issuedDate', 'validityDate', 'status', 'recordStatus',
+            'submittedDate', 'issuedDate', 'validityDate', 'status', 'primaryStatus', 'recordStatus',
             'documentImage', 'documentImageBack', 'barangay', 'contactNumber', 'email', 'notes',
-            'faceLivenessMatchScore', 'ocrExtractedData', 'ocrDiscrepancies', 'ocrMatchScore'
+            'faceLivenessMatchScore', 'ocrExtractedData', 'ocrDiscrepancies', 'ocrMatchScore',
+            'isPackage', 'packageLabel', 'secondaryDocumentId', 'secondaryDocumentImage', 'secondaryDocumentType',
+            'secondaryDocumentNumber', 'secondaryIssuedDate', 'secondaryValidityDate',
+            'secondaryStatus', 'secondaryNotes', 'secondaryOcrData', 'secondaryOcrDiscrepancies'
         ]
+
+    def _get_companion_doc(self, obj):
+        if hasattr(obj, '_cached_companion_doc'):
+            return obj._cached_companion_doc
+
+        companion = None
+        if obj.document_type == 'national_id_front':
+            companion = tbl_documents.objects.filter(
+                user_profile=obj.user_profile,
+                document_type='national_id_back'
+            ).order_by('-created_at').first()
+        elif obj.document_type == 'national_id_back':
+            companion = tbl_documents.objects.filter(
+                user_profile=obj.user_profile,
+                document_type='national_id_front'
+            ).order_by('-created_at').first()
+        elif obj.document_type in ['nbi_clearance', 'police_clearance']:
+            other_type = 'police_clearance' if obj.document_type == 'nbi_clearance' else 'nbi_clearance'
+            companion = tbl_documents.objects.filter(
+                user_profile=obj.user_profile,
+                document_type=other_type
+            ).order_by('-created_at').first()
+
+        obj._cached_companion_doc = companion
+        return companion
+
+    def get_isPackage(self, obj):
+        companion = self._get_companion_doc(obj)
+        return companion is not None
+
+    def get_packageLabel(self, obj):
+        companion = self._get_companion_doc(obj)
+        if companion:
+            if obj.document_type in ['nbi_clearance', 'police_clearance']:
+                return 'Clearances (NBI + Police)'
+            if 'national_id' in obj.document_type:
+                return 'National ID (Front + Back)'
+        return None
 
     def get_name(self, obj):
         u = obj.user_profile
@@ -205,6 +261,8 @@ class AdminVerificationQueueSerializer(serializers.ModelSerializer):
                     profile_link,
                     type="authenticated",
                     sign_url=True,
+                    format="webp",
+                    quality="auto",
                 )
                 return temp_url
             except Exception:
@@ -213,6 +271,9 @@ class AdminVerificationQueueSerializer(serializers.ModelSerializer):
         return f"https://ui-avatars.com/api/?name={obj.user_profile.first_name}+{obj.user_profile.last_name}&background=F5A623&color=fff"
 
     def get_documentType(self, obj):
+        companion = self._get_companion_doc(obj)
+        if companion and obj.document_type in ['nbi_clearance', 'police_clearance']:
+            return 'Clearances (NBI + Police)'
         mapping = {
             'nbi_clearance': 'NBI CLEARANCE',
             'police_clearance': 'Police Clearance',
@@ -276,13 +337,9 @@ class AdminVerificationQueueSerializer(serializers.ModelSerializer):
         return "Not Detected"
 
     def get_status(self, obj):
-        # For national ID, if front and back both exist, combine their status
-        if obj.document_type in ['national_id_front', 'national_id_back']:
-            related = tbl_documents.objects.filter(
-                user_profile=obj.user_profile,
-                document_type__in=['national_id_front', 'national_id_back']
-            )
-            statuses = [d.verification_status for d in related]
+        companion = self._get_companion_doc(obj)
+        if companion:
+            statuses = [obj.verification_status, companion.verification_status]
             if 'Rejected' in statuses:
                 return 'REJECTED'
             elif all(s == 'Verified' for s in statuses):
@@ -297,12 +354,15 @@ class AdminVerificationQueueSerializer(serializers.ModelSerializer):
         return 'PENDING / REVIEW'
 
     def get_recordStatus(self, obj):
-        if obj.verification_status == 'Verified':
+        if self.get_status(obj) == 'VERIFIED':
             return 'Clear Record'
+        companion = self._get_companion_doc(obj)
+        has_critical = False
         if obj.ocr_discrepancies:
             has_critical = any(d.get('severity') == 'high' for d in obj.ocr_discrepancies)
-            return 'Flagged' if has_critical else 'Under Review'
-        return 'Under Review'
+        if not has_critical and companion and companion.ocr_discrepancies:
+            has_critical = any(d.get('severity') == 'high' for d in companion.ocr_discrepancies)
+        return 'Flagged' if has_critical else 'Under Review'
 
     def _sign_cloudinary_url(self, public_id):
         if not public_id:
@@ -314,25 +374,131 @@ class AdminVerificationQueueSerializer(serializers.ModelSerializer):
                 public_id,
                 type="authenticated",
                 sign_url=True,
+                format="webp",
+                quality="auto",
             )
             return temporary_url
         except Exception:
             return public_id
 
     def get_documentImage(self, obj):
-        # Front image (or primary image)
+        # Primary image
         return self._sign_cloudinary_url(obj.document_url)
 
     def get_documentImageBack(self, obj):
-        # If this is national_id_front, return the signed URL of the back image
-        if obj.document_type == 'national_id_front':
-            back_doc = tbl_documents.objects.filter(
-                user_profile=obj.user_profile,
-                document_type='national_id_back'
-            ).order_by('-created_at').first()
-            if back_doc:
-                return self._sign_cloudinary_url(back_doc.document_url)
+        # Backward-compatible alias for secondary image
+        return self.get_secondaryDocumentImage(obj)
+
+    def get_secondaryDocumentImage(self, obj):
+        companion = self._get_companion_doc(obj)
+        if companion:
+            return self._sign_cloudinary_url(companion.document_url)
         return None
+
+    def get_secondaryDocumentType(self, obj):
+        companion = self._get_companion_doc(obj)
+        if companion:
+            mapping = {
+                'nbi_clearance': 'NBI CLEARANCE',
+                'police_clearance': 'Police Clearance',
+                'national_id_front': 'National ID (Front)',
+                'national_id_back': 'National ID (Back)',
+            }
+            return mapping.get(companion.document_type, companion.document_type.replace('_', ' ').title())
+        return None
+
+    def get_secondaryDocumentNumber(self, obj):
+        companion = self._get_companion_doc(obj)
+        if not companion:
+            return None
+        if companion.document_number:
+            return companion.document_number
+        extracted = companion.ocr_extracted_data or {}
+        val = (
+            extracted.get('clearance_number') or
+            extracted.get('philsys_number') or
+            extracted.get('document_number')
+        )
+        return val or "Not Detected"
+
+    def get_secondaryIssuedDate(self, obj):
+        companion = self._get_companion_doc(obj)
+        if not companion:
+            return None
+        if 'national_id' in companion.document_type:
+            return 'N/A (PhilSys ID)'
+        if companion.date_issued:
+            return companion.date_issued.strftime('%b %d, %Y')
+        extracted = companion.ocr_extracted_data or {}
+        val = extracted.get('date_issued')
+        if val:
+            try:
+                from datetime import datetime
+                return datetime.strptime(str(val)[:10], '%Y-%m-%d').strftime('%b %d, %Y')
+            except Exception:
+                return str(val)
+        return "Not Detected"
+
+    def get_secondaryValidityDate(self, obj):
+        companion = self._get_companion_doc(obj)
+        if not companion:
+            return None
+        if 'national_id' in companion.document_type:
+            return 'Permanent'
+        if companion.valid_until:
+            return companion.valid_until.strftime('%b %d, %Y')
+        extracted = companion.ocr_extracted_data or {}
+        val = extracted.get('valid_until')
+        if val:
+            try:
+                from datetime import datetime
+                return datetime.strptime(str(val)[:10], '%Y-%m-%d').strftime('%b %d, %Y')
+            except Exception:
+                return str(val)
+        return "Not Detected"
+
+    def get_primaryStatus(self, obj):
+        s = obj.verification_status
+        if s == 'Verified':
+            return 'VERIFIED'
+        elif s == 'Rejected':
+            return 'REJECTED'
+        return 'PENDING / REVIEW'
+
+    def get_secondaryDocumentId(self, obj):
+        companion = self._get_companion_doc(obj)
+        if companion:
+            return str(companion.document_id)
+        return None
+
+    def get_secondaryStatus(self, obj):
+        companion = self._get_companion_doc(obj)
+        if not companion:
+            return None
+        s = companion.verification_status
+        if s == 'Verified':
+            return 'VERIFIED'
+        elif s == 'Rejected':
+            return 'REJECTED'
+        return 'PENDING / REVIEW'
+
+    def get_secondaryNotes(self, obj):
+        companion = self._get_companion_doc(obj)
+        if companion:
+            return companion.rejection_reason
+        return None
+
+    def get_secondaryOcrData(self, obj):
+        companion = self._get_companion_doc(obj)
+        if companion and companion.ocr_extracted_data:
+            return dict(companion.ocr_extracted_data)
+        return None
+
+    def get_secondaryOcrDiscrepancies(self, obj):
+        companion = self._get_companion_doc(obj)
+        if companion and companion.ocr_discrepancies:
+            return companion.ocr_discrepancies
+        return []
 
     def get_ocrExtractedData(self, obj):
         data = dict(obj.ocr_extracted_data or {})
@@ -343,10 +509,7 @@ class AdminVerificationQueueSerializer(serializers.ModelSerializer):
             data['date_issued'] = None
         # If national_id_front, merge back's extracted data (blood_type, etc.)
         if obj.document_type == 'national_id_front':
-            back_doc = tbl_documents.objects.filter(
-                user_profile=obj.user_profile,
-                document_type='national_id_back'
-            ).order_by('-created_at').first()
+            back_doc = self._get_companion_doc(obj)
             if back_doc and back_doc.ocr_extracted_data:
                 for k, v in back_doc.ocr_extracted_data.items():
                     if k != 'date_issued' and v and not data.get(k):

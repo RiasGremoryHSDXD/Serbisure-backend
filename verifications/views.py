@@ -189,15 +189,24 @@ class AdminVerificationQueueView(generics.ListAPIView):
     serializer_class = AdminVerificationQueueSerializer
 
     def get_queryset(self):
-        # Exclude national_id_back if the user already has a national_id_front,
+        # 1. National ID: Exclude national_id_back if the user already has a national_id_front,
         # ensuring National ID is represented as a single combined entry.
         front_user_ids = tbl_documents.objects.filter(
             document_type='national_id_front'
         ).values_list('user_profile_id', flat=True)
 
+        # 2. Kasambahay Statutory Clearances: Exclude police_clearance if the user already has
+        # an nbi_clearance, ensuring clearances are represented as a single combined package entry.
+        nbi_user_ids = tbl_documents.objects.filter(
+            document_type='nbi_clearance'
+        ).values_list('user_profile_id', flat=True)
+
         qs = tbl_documents.objects.select_related('user_profile').exclude(
             document_type='national_id_back',
             user_profile_id__in=front_user_ids
+        ).exclude(
+            document_type='police_clearance',
+            user_profile_id__in=nbi_user_ids
         ).order_by('-created_at')
         
         role = self.request.query_params.get('role')
@@ -249,21 +258,29 @@ class AdminVerificationReviewView(generics.GenericAPIView):
 
         user = document.user_profile
 
-        # For National ID, locate both front and back records to keep them in sync
-        related_national_docs = tbl_documents.objects.none()
+        # Locate related package records to keep them in sync (e.g. National ID Front+Back or Kasambahay NBI+Police)
+        related_package_docs = tbl_documents.objects.none()
         if document.document_type in ['national_id_front', 'national_id_back']:
-            related_national_docs = tbl_documents.objects.filter(
+            related_package_docs = tbl_documents.objects.filter(
                 user_profile=user,
                 document_type__in=['national_id_front', 'national_id_back']
             )
+        elif document.document_type in ['nbi_clearance', 'police_clearance']:
+            companion_type = 'police_clearance' if document.document_type == 'nbi_clearance' else 'nbi_clearance'
+            has_companion = tbl_documents.objects.filter(user_profile=user, document_type=companion_type).exists()
+            if has_companion:
+                related_package_docs = tbl_documents.objects.filter(
+                    user_profile=user,
+                    document_type__in=['nbi_clearance', 'police_clearance']
+                )
 
         if action == 'approve':
             document.verification_status = 'Verified'
             document.rejection_reason = None
             document.save()
 
-            if related_national_docs.exists():
-                related_national_docs.update(
+            if related_package_docs.exists():
+                related_package_docs.update(
                     verification_status='Verified',
                     rejection_reason=None
                 )
@@ -288,12 +305,6 @@ class AdminVerificationReviewView(generics.GenericAPIView):
             document.rejection_reason = reason or "Document criteria not met"
             document.save()
 
-            if related_national_docs.exists():
-                related_national_docs.update(
-                    verification_status='Rejected',
-                    rejection_reason=reason or "Document criteria not met"
-                )
-
             user.verification_status = 'Rejected'
             user.save(update_fields=['verification_status'])
 
@@ -307,13 +318,13 @@ class AdminVerificationReviewView(generics.GenericAPIView):
             document.rejection_reason = None
             document.save()
 
-            if related_national_docs.exists():
-                related_national_docs.update(
-                    verification_status='Pending',
-                    rejection_reason=None
-                )
-
-            user.verification_status = 'Pending'
+            user_docs = tbl_documents.objects.filter(user_profile=user)
+            if any(d.verification_status == 'Rejected' for d in user_docs):
+                user.verification_status = 'Rejected'
+            elif user_docs.exists() and all(d.verification_status == 'Verified' for d in user_docs):
+                user.verification_status = 'Verified'
+            else:
+                user.verification_status = 'Pending'
             user.save(update_fields=['verification_status'])
 
             return Response({
