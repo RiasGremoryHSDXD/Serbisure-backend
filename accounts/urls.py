@@ -17,6 +17,8 @@ from .views import (
     ExportUserDataView,
     AdminUserListView,
     AdminDashboardStatsView,
+    AdminDashboardActivityView,
+    AdminMonthlyTrendView,
 )
 
 urlpatterns = [
@@ -68,4 +70,6 @@ urlpatterns = [
     # Admin Endpoints
     path('admin/users/', AdminUserListView.as_view(), name='admin-users'),
     path('admin/dashboard-stats/', AdminDashboardStatsView.as_view(), name='admin-dashboard-stats'),
+    path('admin/dashboard-activity/', AdminDashboardActivityView.as_view(), name='admin-dashboard-activity'),
+    path('admin/monthly-trend/', AdminMonthlyTrendView.as_view(), name='admin-monthly-trend'),
 ]

@@ -336,6 +336,187 @@ class AdminDashboardStatsView(APIView):
         }, status=status.HTTP_200_OK)
 
 
+class AdminDashboardActivityView(APIView):
+    """
+    Returns recent booking placements for the admin dashboard activity table.
+    Queries real tbl_booking + tbl_booking_assignment records, scoped optionally by barangay.
+    Returns the latest 10 accepted/in-progress/completed bookings.
+    """
+    permission_classes = [AllowAny]
+
+    def get(self, request, *args, **kwargs):
+        barangay_param = request.query_params.get('barangay')
+        from booking.models import tbl_booking, tbl_booking_assignment
+        from django.db.models import Q
+        import cloudinary.utils
+
+        # Get bookings ordered by most recent first
+        bookings_qs = tbl_booking.objects.select_related('poster_id').order_by('-createdAt')
+
+        # Optional barangay scope
+        if barangay_param and barangay_param.upper() not in ['ALL', 'ALL BARANGAYS']:
+            bookings_qs = bookings_qs.filter(
+                Q(poster_id__city__icontains=barangay_param) |
+                Q(poster_id__street__icontains=barangay_param) |
+                Q(service_address__icontains=barangay_param)
+            )
+
+        result = []
+        for booking in bookings_qs[:15]:
+            poster = booking.poster_id
+            poster_name = f"{poster.first_name} {poster.last_name}".strip() or poster.username
+
+            # Build avatar URL for poster
+            poster_avatar = poster.profile_link or f"https://ui-avatars.com/api/?name={poster.first_name}+{poster.last_name}&background=F5A623&color=fff"
+            if poster.profile_link and not (poster.profile_link.startswith('http://') or poster.profile_link.startswith('https://')):
+                try:
+                    temp_url, _ = cloudinary.utils.cloudinary_url(
+                        poster.profile_link, type='authenticated', sign_url=True
+                    )
+                    poster_avatar = temp_url
+                except Exception:
+                    pass
+
+            # Try to find assigned worker (Kasambahay)
+            assignment = tbl_booking_assignment.objects.filter(booking_id=booking).select_related('accepter_id').first()
+            worker_name = 'Unassigned'
+            worker_avatar = 'https://ui-avatars.com/api/?name=?&background=E2E8F0&color=94A3B8'
+            if assignment:
+                w = assignment.accepter_id
+                worker_name = f"{w.first_name} {w.last_name}".strip() or w.username
+                worker_avatar = w.profile_link or f"https://ui-avatars.com/api/?name={w.first_name}+{w.last_name}&background=0D0D11&color=fff"
+                if w.profile_link and not (w.profile_link.startswith('http://') or w.profile_link.startswith('https://')):
+                    try:
+                        temp_url, _ = cloudinary.utils.cloudinary_url(
+                            w.profile_link, type='authenticated', sign_url=True
+                        )
+                        worker_avatar = temp_url
+                    except Exception:
+                        pass
+
+            # RA 10361 compliance checks
+            # Minimum wage baseline: ₱5,000/mo for CDO Kasambahay
+            MIN_WAGE = 5000.0
+            daily_rate = float(booking.daily_rate)
+            # Estimate monthly from daily_rate * 26 working days
+            monthly_estimate = daily_rate * 26
+            is_below_min = monthly_estimate < MIN_WAGE
+
+            # Short-term capping: count all short_term bookings by same poster
+            short_term_count = tbl_booking.objects.filter(
+                poster_id=poster,
+                booking_type='short_term',
+                booking_status__in=['Accepted', 'InProgress', 'Completed']
+            ).count()
+            is_capped = short_term_count >= 3
+
+            if is_below_min:
+                compliance_status = 'BELOW_MINIMUM_WAGE'
+            elif is_capped and booking.booking_type == 'short_term':
+                compliance_status = 'FLAGGED_THROTTLED'
+            else:
+                compliance_status = 'COMPLIANT'
+
+            # Contract type label
+            contract_type = 'Formal Kasambahay (Long-Term)' if booking.booking_type == 'long_term' else 'Short-Term On-Demand'
+
+            # Barangay
+            brgy = 'Unknown'
+            for b_name in ['Pagatpat', 'Canitoan']:
+                if b_name.lower() in (poster.street or '').lower() or b_name.lower() in (poster.city or '').lower():
+                    brgy = b_name
+                    break
+
+            result.append({
+                'id': str(booking.booking_id),
+                'homeownerName': poster_name,
+                'homeownerAvatar': poster_avatar,
+                'workerName': worker_name,
+                'workerAvatar': worker_avatar,
+                'serviceCategory': ', '.join(booking.service_category),
+                'monthlyBookingsCount': short_term_count,
+                'isCapped': is_capped,
+                'offeredWage': round(monthly_estimate),
+                'dailyRate': daily_rate,
+                'minimumWageBaseline': MIN_WAGE,
+                'isBelowMinimumWage': is_below_min,
+                'contractType': contract_type,
+                'bookingType': booking.booking_type,
+                'bookingStatus': booking.booking_status,
+                'startDate': booking.start_time.strftime('%b %d, %Y') if booking.start_time else 'TBD',
+                'status': compliance_status,
+                'barangay': brgy,
+                'createdAt': booking.createdAt.isoformat() if booking.createdAt else None,
+            })
+
+        return Response({'bookings': result, 'count': len(result)}, status=status.HTTP_200_OK)
+
+
+class AdminMonthlyTrendView(APIView):
+    """
+    Returns monthly employment trend data for the last 12 months.
+    Computes employed/available counts per calendar month from real booking data.
+    """
+    permission_classes = [AllowAny]
+
+    def get(self, request, *args, **kwargs):
+        from booking.models import tbl_booking, tbl_booking_assignment
+        from django.db.models import Q, Count
+        from django.db.models.functions import TruncMonth
+        from django.utils import timezone
+        import calendar
+
+        barangay_param = request.query_params.get('barangay')
+
+        # Get total registered kasambahays (optional barangay scope)
+        workers_qs = tbl_user_profile.objects.filter(account_type='Kasambahay')
+        if barangay_param and barangay_param.upper() not in ['ALL', 'ALL BARANGAYS']:
+            workers_qs = workers_qs.filter(
+                Q(city__icontains=barangay_param) | Q(street__icontains=barangay_param)
+            )
+        total_workers = workers_qs.count()
+
+        # Monthly booking aggregation for the past 12 calendar months
+        now = timezone.now()
+        months = []
+        for i in range(11, -1, -1):
+            # Compute month offset
+            month_offset = now.month - i
+            year_offset = now.year
+            while month_offset <= 0:
+                month_offset += 12
+                year_offset -= 1
+
+            month_start = now.replace(year=year_offset, month=month_offset, day=1, hour=0, minute=0, second=0, microsecond=0)
+            last_day = calendar.monthrange(year_offset, month_offset)[1]
+            month_end = month_start.replace(day=last_day, hour=23, minute=59, second=59)
+
+            # Count bookings accepted or in-progress during this month
+            month_bookings_qs = tbl_booking.objects.filter(
+                createdAt__gte=month_start,
+                createdAt__lte=month_end,
+                booking_status__in=['Accepted', 'InProgress', 'Completed']
+            )
+            if barangay_param and barangay_param.upper() not in ['ALL', 'ALL BARANGAYS']:
+                month_bookings_qs = month_bookings_qs.filter(
+                    Q(poster_id__city__icontains=barangay_param) |
+                    Q(poster_id__street__icontains=barangay_param)
+                )
+
+            employed_count = month_bookings_qs.values('assignments__accepter_id').distinct().count()
+            available_count = max(0, total_workers - employed_count)
+
+            months.append({
+                'month': month_start.strftime('%b'),
+                'year': year_offset,
+                'employed': employed_count,
+                'available': available_count,
+                'total': total_workers,
+            })
+
+        return Response({'trend': months}, status=status.HTTP_200_OK)
+
+
 class ProfileImageUploadThrottle(UserRateThrottle):
     scope = 'profile_image_upload'
     rate = '2/h'
