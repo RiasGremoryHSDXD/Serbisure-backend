@@ -37,9 +37,10 @@ class BookingView(generics.CreateAPIView):
     def create(self, request, *args, **kwargs):
         if request.user.verification_status != "Verified":
             return Response({
-                "detail": "Only verified user can post"},
-                status=status.HTTP_403_FORBIDDEN
-            )
+                "code": "account_not_verified",
+                "detail": "Account verification is required before posting. Please verify your account to keep our community safe and trusted.",
+                "verification_status": request.user.verification_status
+            }, status=status.HTTP_403_FORBIDDEN)
 
         idempotency_key = request.headers.get('Idempotency-Key')
         if not idempotency_key or not check_valid_uuid(idempotency_key):
@@ -111,6 +112,10 @@ class BookingFeedView(generics.ListAPIView):
                     'all around': 'All-around',
                 }
                 mapped_cats = [cat_map.get(c.lower(), c) for c in raw_cats]
+                # If filtering for a specific domestic service, also include All-around postings
+                if any(c in mapped_cats for c in ['Cleaning', 'Child_care', 'Cooking', 'Caregiver', 'Laundry']):
+                    if 'All-around' not in mapped_cats:
+                        mapped_cats.append('All-around')
                 try:
                     queryset = queryset.filter(service_category__overlap=mapped_cats)
                 except Exception:

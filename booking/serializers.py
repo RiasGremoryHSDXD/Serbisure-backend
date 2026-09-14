@@ -48,6 +48,14 @@ class BookingSerializer(serializers.ModelSerializer):
         read_only_fields = ['booking_id', 'booking_status', 'poster_id', 'createdAt']
 
     def validate(self, data):
+        # Auto-normalize service_category: if all 5 base services are selected or All-around is combined, normalize to ['All-around']
+        service_category = data.get('service_category')
+        if isinstance(service_category, list):
+            base_services = {'Cleaning', 'Child_care', 'Cooking', 'Caregiver', 'Laundry'}
+            current_set = set(service_category)
+            if base_services.issubset(current_set) or ('All-around' in current_set and len(current_set) > 1):
+                data['service_category'] = ['All-around']
+
         now = timezone.now()
         start_time = data.get('start_time')
         end_time = data.get('end_time')
