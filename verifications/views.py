@@ -3,6 +3,7 @@ from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.parsers import MultiPartParser, FormParser
 from .models import tbl_documents
 from .serializers import DocumentUploadSerializer, AdminVerificationQueueSerializer
+from verifications.services.audit_logger import record_audit_log
 from rest_framework.throttling import UserRateThrottle
 from rest_framework.exceptions import Throttled
 from rest_framework import status
@@ -163,6 +164,16 @@ class UserDeleteRejectedDocumentView(generics.GenericAPIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
+        record_audit_log(
+            document=doc,
+            action='DELETED',
+            actor=request.user,
+            target_user=doc.user_profile,
+            previous_status=doc.verification_status,
+            new_status='Deleted',
+            reason="User deleted rejected document prior to re-upload.",
+            request=request
+        )
         doc.delete()
         return Response({"message": "Rejected document removed successfully."}, status=status.HTTP_200_OK)
 
@@ -413,26 +424,82 @@ class AdminVerificationReviewView(generics.GenericAPIView):
                     document_type__in=['nbi_clearance', 'police_clearance']
                 )
 
+        reviewer = request.user if (request.user and request.user.is_authenticated) else None
+        if not reviewer:
+            reviewer_identifier = (request.data.get('reviewer_email') or request.data.get('reviewer_username') or '').strip()
+            if reviewer_identifier:
+                from accounts.models import tbl_user_profile
+                from django.db.models import Q
+                reviewer = tbl_user_profile.objects.filter(
+                    Q(email__iexact=reviewer_identifier) | Q(username__iexact=reviewer_identifier)
+                ).first()
+
+        prev_status = document.verification_status
+
         if action == 'approve':
             document.verification_status = 'Verified'
             document.rejection_reason = None
+            if reviewer:
+                document.verifyBy = reviewer
             document.save()
 
+            record_audit_log(
+                document=document,
+                action='APPROVED',
+                actor=reviewer,
+                target_user=user,
+                previous_status=prev_status,
+                new_status='Verified',
+                reason=None,
+                request=request
+            )
+
+            # If approving and a companion document exists, only auto-approve companions that are currently 'Pending'.
+            # CRITICAL: NEVER overwrite a companion document that has been explicitly Rejected!
             if related_package_docs.exists():
-                related_package_docs.update(
-                    verification_status='Verified',
-                    rejection_reason=None
-                )
+                pending_companions = related_package_docs.exclude(
+                    document_id=document.document_id
+                ).filter(verification_status='Pending')
+                for companion in pending_companions:
+                    record_audit_log(
+                        document=companion,
+                        action='APPROVED',
+                        actor=reviewer,
+                        target_user=user,
+                        previous_status=companion.verification_status,
+                        new_status='Verified',
+                        reason="Approved with package",
+                        request=request
+                    )
+                    companion.verification_status = 'Verified'
+                    companion.rejection_reason = None
+                    if reviewer:
+                        companion.verifyBy = reviewer
+                    companion.save()
 
             # Check if all user documents are verified
             user_docs = tbl_documents.objects.filter(user_profile=user)
             all_verified = user_docs.exists() and all(d.verification_status == 'Verified' for d in user_docs)
+            has_rejected = user_docs.exists() and any(d.verification_status == 'Rejected' for d in user_docs)
             if all_verified:
                 user.verification_status = 'Verified'
-                user.save(update_fields=['verification_status'])
+            elif has_rejected:
+                user.verification_status = 'Rejected'
             else:
                 user.verification_status = 'Pending'
-                user.save(update_fields=['verification_status'])
+            user.save(update_fields=['verification_status'])
+
+            try:
+                from notifications.models import tbl_notification
+                doc_display = dict(tbl_documents.DOCUMENT_CHOICES).get(document.document_type, document.document_type)
+                role_label = getattr(reviewer, 'account_type', 'Admin') if reviewer else 'Admin'
+                tbl_notification.objects.create(
+                    sender_id=reviewer or user,
+                    receiver_id=user,
+                    notification_message=f"Your {doc_display} has been approved and verified by {role_label}."
+                )
+            except Exception:
+                pass
 
             return Response({
                 "message": f"Document approved successfully.",
@@ -442,10 +509,40 @@ class AdminVerificationReviewView(generics.GenericAPIView):
         elif action == 'reject':
             document.verification_status = 'Rejected'
             document.rejection_reason = reason or "Document criteria not met"
+            if reviewer:
+                document.verifyBy = reviewer
             document.save()
+
+            record_audit_log(
+                document=document,
+                action='REJECTED',
+                actor=reviewer,
+                target_user=user,
+                previous_status=prev_status,
+                new_status='Rejected',
+                reason=reason or "Document criteria not met",
+                request=request
+            )
+
+            # NOTE: DO NOT reject companion documents!
+            # If Front ID is rejected, Back ID must NOT be rejected.
+            # If NBI Clearance is rejected, Police Clearance must NOT be rejected.
+            # Each document can be rejected independently.
 
             user.verification_status = 'Rejected'
             user.save(update_fields=['verification_status'])
+
+            try:
+                from notifications.models import tbl_notification
+                doc_display = dict(tbl_documents.DOCUMENT_CHOICES).get(document.document_type, document.document_type)
+                role_label = getattr(reviewer, 'account_type', 'Admin') if reviewer else 'Admin'
+                tbl_notification.objects.create(
+                    sender_id=reviewer or user,
+                    receiver_id=user,
+                    notification_message=f"Your {doc_display} was rejected by {role_label}: {reason or 'Document criteria not met'}. You may re-upload a clear and valid document."
+                )
+            except Exception:
+                pass
 
             return Response({
                 "message": "Document rejected.",
@@ -455,7 +552,22 @@ class AdminVerificationReviewView(generics.GenericAPIView):
         elif action == 'reset':
             document.verification_status = 'Pending'
             document.rejection_reason = None
+            document.verifyBy = None
             document.save()
+
+            record_audit_log(
+                document=document,
+                action='RESET',
+                actor=reviewer,
+                target_user=user,
+                previous_status=prev_status,
+                new_status='Pending',
+                reason="Document reset to Pending review",
+                request=request
+            )
+
+            # NOTE: DO NOT reset companion documents!
+            # Resetting Front ID must NOT reset Back ID.
 
             user_docs = tbl_documents.objects.filter(user_profile=user)
             if any(d.verification_status == 'Rejected' for d in user_docs):
