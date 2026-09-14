@@ -148,17 +148,45 @@ class BookingFeedView(generics.ListAPIView):
             except (InvalidOperation, ValueError, TypeError):
                 pass
 
-        # 4. Location filter
+        # 4. Location / Barangay / City filters
+        barangay_param = params.get('barangay')
+        if barangay_param and barangay_param.upper() not in ['ALL', 'ALL BARANGAYS']:
+            b_norm = barangay_param.strip()
+            queryset = queryset.filter(
+                Q(barangay__iexact=b_norm) |
+                Q(barangay__icontains=b_norm) |
+                Q(street__icontains=b_norm)
+            )
+
+        city_param = params.get('city')
+        if city_param and city_param.upper() not in ['ALL', 'ALL CITIES']:
+            c_norm = city_param.strip()
+            queryset = queryset.filter(
+                Q(city__iexact=c_norm) |
+                Q(city__icontains=c_norm)
+            )
+
         location = params.get('location')
         if location and location.strip():
-            queryset = queryset.filter(service_address__icontains=location.strip())
+            loc = location.strip()
+            queryset = queryset.filter(
+                Q(barangay__icontains=loc) |
+                Q(city__icontains=loc) |
+                Q(province__icontains=loc) |
+                Q(region__icontains=loc) |
+                Q(street__icontains=loc)
+            )
 
         # 5. Search keyword
         search_kw = params.get('search') or params.get('q')
         if search_kw and search_kw.strip():
             kw = search_kw.strip()
             queryset = queryset.filter(
-                Q(service_address__icontains=kw) |
+                Q(barangay__icontains=kw) |
+                Q(city__icontains=kw) |
+                Q(street__icontains=kw) |
+                Q(province__icontains=kw) |
+                Q(region__icontains=kw) |
                 Q(special_instruction__icontains=kw) |
                 Q(poster_id__first_name__icontains=kw) |
                 Q(poster_id__last_name__icontains=kw)
@@ -461,7 +489,7 @@ class BookingProposalCreateView(APIView):
 
         # Enforce statutory minimum wage if booking is long_term (Batas Kasambahay RA 10361)
         if booking.booking_type == 'long_term':
-            full_address = f"{booking.service_address or ''} {booking.zip_code or ''}"
+            full_address = f"{booking.full_address} {booking.zip_code or ''}".strip()
             min_wage = get_minimum_daily_wage('long_term', full_address)
             if rate_val < min_wage:
                 approx_monthly = get_monthly_equivalent(min_wage)
@@ -668,7 +696,8 @@ class BookingRecommendationsView(APIView):
                         break
 
                 # Location match
-                if user_loc and user_loc in (job.service_address or '').lower():
+                job_loc_str = f"{job.barangay or ''} {job.city or ''} {job.street or ''}".lower()
+                if user_loc and user_loc in job_loc_str:
                     score += 25
 
                 # Fair rate bonus
@@ -678,11 +707,16 @@ class BookingRecommendationsView(APIView):
                 from .serializers import get_signed_avatar
                 p_first = job.poster_id.first_name or ''
                 p_last = job.poster_id.last_name or ''
+                display_loc = f"{job.barangay}, {job.city}" if (job.barangay and job.city) else (job.full_address or 'Cagayan de Oro')
                 scored_jobs.append({
                     'booking_id': str(job.booking_id),
                     'title': ", ".join(job.service_category) if isinstance(job.service_category, list) else str(job.service_category),
                     'daily_rate': str(job.daily_rate),
-                    'location': job.service_address,
+                    'location': display_loc,
+                    'barangay': job.barangay,
+                    'city': job.city,
+                    'street': job.street,
+                    'province': job.province,
                     'match_score': min(score, 100),
                     'poster_name': f"{p_first} {p_last}".strip() or job.poster_id.username,
                     'poster_avatar': get_signed_avatar(job.poster_id),

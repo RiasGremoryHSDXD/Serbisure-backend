@@ -85,9 +85,13 @@ This document outlines the database schema, models, field types, and choices (en
 | `service_category` | `ArrayField` | - |
 | `start_time` | `DateTimeField` | - |
 | `end_time` | `DateTimeField` | Null=True, Blank=True |
-| `service_address` | `CharField` | - |
+| `region` | `CharField` | Null=True, Blank=True |
+| `province` | `CharField` | Null=True, Blank=True |
+| `city` | `CharField` | Null=True, Blank=True |
+| `barangay` | `CharField` | Null=True, Blank=True |
+| `street` | `CharField` | Null=True, Blank=True |
 | `floor_number` | `CharField` | Null=True, Blank=True |
-| `zip_code` | `CharField` | - |
+| `zip_code` | `CharField` | Null=True, Blank=True |
 | `special_instruction` | `TextField` | Null=True, Blank=True |
 | `daily_rate` | `DecimalField` | - |
 | `createdAt` | `DateTimeField` | Blank=True |

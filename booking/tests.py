@@ -51,7 +51,11 @@ class BookingTests(APITestCase):
         return {
             "booking_type": "short_term",
             "service_category": ["Cleaning"],
-            "service_address": "123 Test St",
+            "region": "Region X - Northern Mindanao",
+            "province": "Misamis Oriental",
+            "city": "Cagayan de Oro",
+            "barangay": "Macasandig",
+            "street": "123 Test St",
             "zip_code": "9000",
             "daily_rate": "500.00",
             "special_instruction": "Please be careful with the vase.",
@@ -176,7 +180,11 @@ class BookingTests(APITestCase):
         headers = {'HTTP_IDEMPOTENCY_KEY': str(uuid.uuid4())}
         payload = self.get_valid_payload()
         payload['booking_type'] = 'long_term'
-        payload['service_address'] = 'Cagayan de Oro City, Misamis Oriental'
+        payload['region'] = 'Region X - Northern Mindanao'
+        payload['province'] = 'Misamis Oriental'
+        payload['city'] = 'Cagayan de Oro'
+        payload['barangay'] = 'Macasandig'
+        payload['street'] = '123 Test St'
         payload['daily_rate'] = '150.00'  # Below ₱250 statutory floor
 
         response = self.client.post(self.url, payload, format='json', **headers)
@@ -194,7 +202,11 @@ class BookingTests(APITestCase):
         headers = {'HTTP_IDEMPOTENCY_KEY': str(uuid.uuid4())}
         payload = self.get_valid_payload()
         payload['booking_type'] = 'long_term'
-        payload['service_address'] = 'Cagayan de Oro City, Misamis Oriental'
+        payload['region'] = 'Region X - Northern Mindanao'
+        payload['province'] = 'Misamis Oriental'
+        payload['city'] = 'Cagayan de Oro'
+        payload['barangay'] = 'Macasandig'
+        payload['street'] = '123 Test St'
         payload['daily_rate'] = '250.00'
 
         response = self.client.post(self.url, payload, format='json', **headers)
@@ -250,7 +262,11 @@ class BookingFeedFilterTests(APITestCase):
             booking_status='Pending',
             service_category=['Cleaning'],
             start_time=now + datetime.timedelta(days=1),
-            service_address='Barangay Carmen, Cagayan de Oro',
+            region='Region X - Northern Mindanao',
+            province='Misamis Oriental',
+            city='Cagayan de Oro',
+            barangay='Carmen',
+            street='Barangay Carmen',
             daily_rate=500.00
         )
 
@@ -260,7 +276,11 @@ class BookingFeedFilterTests(APITestCase):
             booking_status='Pending',
             service_category=['Cooking', 'Caregiver'],
             start_time=now + datetime.timedelta(days=2),
-            service_address='Nazareth, Cagayan de Oro',
+            region='Region X - Northern Mindanao',
+            province='Misamis Oriental',
+            city='Cagayan de Oro',
+            barangay='Nazareth',
+            street='Nazareth',
             daily_rate=1200.00
         )
 
@@ -336,7 +356,11 @@ class BookingLifecycleAndProposalTests(APITestCase):
             booking_status='Pending',
             service_category=['Cleaning'],
             start_time=now + datetime.timedelta(days=1),
-            service_address='Barangay Carmen, Cagayan de Oro',
+            region='Region X - Northern Mindanao',
+            province='Misamis Oriental',
+            city='Cagayan de Oro',
+            barangay='Carmen',
+            street='Barangay Carmen',
             daily_rate=500.00
         )
 
@@ -417,7 +441,11 @@ class BookingLifecycleAndProposalTests(APITestCase):
             booking_status='Pending',
             service_category=['Cleaning'],
             start_time=now + datetime.timedelta(days=1),
-            service_address='Macasandig, Cagayan de Oro',
+            region='Region X - Northern Mindanao',
+            province='Misamis Oriental',
+            city='Cagayan de Oro',
+            barangay='Macasandig',
+            street='Macasandig',
             daily_rate=300.00
         )
         self.client.force_authenticate(user=self.kasambahay)
@@ -439,7 +467,11 @@ class BookingLifecycleAndProposalTests(APITestCase):
             booking_status='Pending',
             service_category=['Cleaning'],
             start_time=now + datetime.timedelta(days=1),
-            service_address='Macasandig, Cagayan de Oro',
+            region='Region X - Northern Mindanao',
+            province='Misamis Oriental',
+            city='Cagayan de Oro',
+            barangay='Macasandig',
+            street='Macasandig',
             daily_rate=300.00
         )
         self.client.force_authenticate(user=self.kasambahay)

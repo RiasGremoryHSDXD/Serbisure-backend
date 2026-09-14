@@ -422,11 +422,12 @@ class AdminDashboardActivityView(APIView):
         # Optional barangay scope
         if barangay_param and barangay_param.upper() not in ['ALL', 'ALL BARANGAYS']:
             bookings_qs = bookings_qs.filter(
+                Q(barangay__iexact=barangay_param) |
+                Q(barangay__icontains=barangay_param) |
                 Q(poster_id__barangay__iexact=barangay_param) |
                 Q(poster_id__barangay__icontains=barangay_param) |
                 Q(poster_id__city__icontains=barangay_param) |
-                Q(poster_id__street__icontains=barangay_param) |
-                Q(service_address__icontains=barangay_param)
+                Q(poster_id__street__icontains=barangay_param)
             )
 
         result = []
@@ -489,10 +490,10 @@ class AdminDashboardActivityView(APIView):
             contract_type = 'Formal Kasambahay (Long-Term)' if booking.booking_type == 'long_term' else 'Short-Term On-Demand'
 
             # Barangay
-            brgy = poster.barangay or ''
+            brgy = booking.barangay or poster.barangay or ''
             if not brgy:
                 for b_name in ['Pagatpat', 'Canitoan']:
-                    if b_name.lower() in (poster.street or '').lower() or b_name.lower() in (poster.city or '').lower():
+                    if b_name.lower() in (poster.street or '').lower() or b_name.lower() in (poster.city or '').lower() or b_name.lower() in (booking.street or '').lower() or b_name.lower() in (booking.full_address or '').lower():
                         brgy = b_name
                         break
             if not brgy:
@@ -1011,12 +1012,15 @@ class ExportUserDataView(APIView):
         from reviews.models import tbl_review
 
         posted_bookings = list(tbl_booking.objects.filter(poster_id=user).values(
-            'booking_id', 'booking_type', 'booking_status', 'service_category', 'daily_rate', 'service_address', 'createdAt'
+            'booking_id', 'booking_type', 'booking_status', 'service_category', 'daily_rate',
+            'street', 'barangay', 'city', 'province', 'region', 'zip_code', 'createdAt'
         ))
         for b in posted_bookings:
             b['booking_id'] = str(b['booking_id'])
             b['createdAt'] = str(b['createdAt'])
             b['daily_rate'] = str(b['daily_rate'])
+            addr_parts = [b.get(k) for k in ['street', 'barangay', 'city', 'province'] if b.get(k)]
+            b['full_address'] = ', '.join(addr_parts) if addr_parts else ''
 
         assigned_bookings = list(tbl_booking_assignment.objects.filter(accepter_id=user).values(
             'booking_assignment_id', 'booking_id', 'accepted_at'
