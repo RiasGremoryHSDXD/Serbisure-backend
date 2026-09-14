@@ -396,6 +396,8 @@ class tbl_user_profile(AbstractUser):
         return self.username
     
     class Meta: 
+        verbose_name = "User"
+        verbose_name_plural = "Users"
         constraints = [
             # Lock down the account_type column in the database
 

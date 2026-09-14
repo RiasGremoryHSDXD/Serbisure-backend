@@ -53,6 +53,18 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
             'user_about',
             'user_tags',
         ]
+        extra_kwargs = {
+            'email': {
+                'error_messages': {
+                    'unique': 'A user with this email address is already registered.'
+                }
+            },
+            'contact_number': {
+                'error_messages': {
+                    'unique': 'A user with this contact number is already registered.'
+                }
+            }
+        }
 
     # We override the standard save method to ensure the password gets hashed
     def create(self, validated_data):
@@ -232,6 +244,10 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
         token['street'] = user.street or ''
         token['zipcode'] = user.zipcode or ''
         token['country'] = user.country or 'Philippines'
+        token['date_of_birth'] = str(user.date_of_birth) if user.date_of_birth else ''
+        token['gender'] = user.gender or ''
+        token['nationality'] = user.nationality or 'Filipino'
+        token['religion'] = user.religion or ''
 
         public_id = user.profile_link
 
