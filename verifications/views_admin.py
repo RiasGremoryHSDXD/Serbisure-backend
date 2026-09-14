@@ -1,15 +1,18 @@
 import logging
 from rest_framework import generics, status
 from rest_framework.views import APIView
-from rest_framework.permissions import IsAuthenticated, BasePermission
+from rest_framework.permissions import IsAuthenticated, BasePermission, AllowAny
 from rest_framework.response import Response
 from django.shortcuts import get_object_or_404
-from .models import tbl_documents
+from django.db.models import Q
+from .models import tbl_documents, tbl_audit_logs
 from .serializers_admin import (
     AdminDocumentDetailSerializer,
     AdminDocumentActionSerializer,
+    AdminAuditLogSerializer,
 )
 from verifications.services.document_processor import process_document_async
+from verifications.services.audit_logger import record_audit_log
 from notifications.models import tbl_notification
 
 logger = logging.getLogger(__name__)
@@ -117,11 +120,24 @@ class AdminDocumentActionView(APIView):
             document.document_type, document.document_type
         )
 
+        prev_status = document.verification_status
+
         if new_status == 'Verified':
             document.verification_status = 'Verified'
             document.verifyBy = request.user
             document.rejection_reason = None
             document.save(update_fields=['verification_status', 'verifyBy', 'rejection_reason'])
+
+            record_audit_log(
+                document=document,
+                action='APPROVED',
+                actor=request.user,
+                target_user=document.user_profile,
+                previous_status=prev_status,
+                new_status='Verified',
+                reason=None,
+                request=request
+            )
 
             # Check if all required documents for user are now verified
             check_and_update_profile_verification(document.user_profile)
@@ -146,6 +162,17 @@ class AdminDocumentActionView(APIView):
             document.verifyBy = request.user
             document.rejection_reason = rejection_reason
             document.save(update_fields=['verification_status', 'verifyBy', 'rejection_reason'])
+
+            record_audit_log(
+                document=document,
+                action='REJECTED',
+                actor=request.user,
+                target_user=document.user_profile,
+                previous_status=prev_status,
+                new_status='Rejected',
+                reason=rejection_reason,
+                request=request
+            )
 
             # Notify user
             tbl_notification.objects.create(
@@ -174,9 +201,56 @@ class AdminReprocessDocumentView(APIView):
 
     def post(self, request, document_id):
         document = get_object_or_404(tbl_documents, document_id=document_id)
+        record_audit_log(
+            document=document,
+            action='REPROCESSED',
+            actor=request.user,
+            target_user=document.user_profile,
+            previous_status=document.verification_status,
+            new_status=document.verification_status,
+            reason="Triggered manual OCR + AI re-processing",
+            request=request
+        )
         process_document_async(str(document.document_id))
 
         return Response({
             "message": "Document re-processing queued in background.",
             "document_id": str(document.document_id)
         }, status=status.HTTP_202_ACCEPTED)
+
+
+class AdminAuditLogListView(generics.ListAPIView):
+    """
+    GET /api/v1/verifications/admin/audit-logs/
+    Returns immutable audit trail logs for Superadmin dashboard with search, filtering, and pagination.
+    """
+    permission_classes = [AllowAny]
+    serializer_class = AdminAuditLogSerializer
+
+    def get_queryset(self):
+        qs = tbl_audit_logs.objects.all().order_by('-created_at')
+
+        action_param = self.request.query_params.get('action')
+        if action_param and action_param.upper() != 'ALL':
+            qs = qs.filter(action=action_param.upper())
+
+        role_param = self.request.query_params.get('role')
+        if role_param and role_param.upper() != 'ALL':
+            qs = qs.filter(actor_role__iexact=role_param)
+
+        barangay_param = self.request.query_params.get('barangay')
+        if barangay_param and barangay_param != 'All Barangays':
+            qs = qs.filter(Q(target_barangay__iexact=barangay_param) | Q(actor_barangay__iexact=barangay_param))
+
+        search = self.request.query_params.get('search')
+        if search:
+            qs = qs.filter(
+                Q(actor_name__icontains=search) |
+                Q(target_name__icontains=search) |
+                Q(actor_email__icontains=search) |
+                Q(target_email__icontains=search) |
+                Q(document_type__icontains=search) |
+                Q(reason__icontains=search)
+            )
+
+        return qs

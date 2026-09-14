@@ -11,6 +11,7 @@ from .views_admin import (
     AdminDocumentDetailView,
     AdminDocumentActionView,
     AdminReprocessDocumentView,
+    AdminAuditLogListView,
 )
 
 urlpatterns = [
@@ -28,4 +29,5 @@ urlpatterns = [
     path('admin/documents/<uuid:document_id>/', AdminDocumentDetailView.as_view(), name='admin-document-detail'),
     path('admin/documents/<uuid:document_id>/action/', AdminDocumentActionView.as_view(), name='admin-document-action'),
     path('admin/documents/<uuid:document_id>/reprocess/', AdminReprocessDocumentView.as_view(), name='admin-document-reprocess'),
+    path('admin/audit-logs/', AdminAuditLogListView.as_view(), name='admin-audit-logs'),
 ]

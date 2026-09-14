@@ -71,6 +71,35 @@ This document outlines the database schema, models, field types, and choices (en
 | `face_liveness_score` | `FloatField` | Null=True, Blank=True |
 | `created_at` | `DateTimeField` | Blank=True |
 
+### `tbl_audit_logs`
+- **Database Table:** `tbl_audit_logs`
+
+| Field Name | Data Type | Constraints / Choices / FK |
+| --- | --- | --- |
+| `log_id` | `UUIDField` | Primary Key, Unique |
+| `actor` | `ForeignKey` | Null=True, Blank=True, FK -> `tbl_user_profile` |
+| `actor_name` | `CharField` | Null=True, Blank=True |
+| `actor_email` | `CharField` | Null=True, Blank=True |
+| `actor_role` | `CharField` | Null=True, Blank=True |
+| `actor_barangay` | `CharField` | Null=True, Blank=True |
+| `target_user` | `ForeignKey` | Null=True, Blank=True, FK -> `tbl_user_profile` |
+| `target_name` | `CharField` | Null=True, Blank=True |
+| `target_email` | `CharField` | Null=True, Blank=True |
+| `target_role` | `CharField` | Null=True, Blank=True |
+| `target_barangay` | `CharField` | Null=True, Blank=True |
+| `document` | `ForeignKey` | Null=True, Blank=True, FK -> `tbl_documents` |
+| `document_id_snapshot` | `UUIDField` | Null=True, Blank=True |
+| `document_type` | `CharField` | Null=True, Blank=True |
+| `document_number` | `CharField` | Null=True, Blank=True |
+| `action` | `CharField` | Choices: ['APPROVED', 'REJECTED', 'RESET', 'DELETED', 'UPLOADED', 'REPROCESSED', 'UPDATED'] |
+| `previous_status` | `CharField` | Null=True, Blank=True |
+| `new_status` | `CharField` | Null=True, Blank=True |
+| `reason` | `TextField` | Null=True, Blank=True |
+| `ip_address` | `GenericIPAddressField` | Null=True, Blank=True |
+| `user_agent` | `CharField` | Null=True, Blank=True |
+| `metadata` | `JSONField` | Null=True, Blank=True |
+| `created_at` | `DateTimeField` | Blank=True |
+
 ## Booking App
 
 ### `tbl_booking`
