@@ -192,6 +192,9 @@ class AdminVerificationQueueSerializer(serializers.ModelSerializer):
     secondaryOcrData = serializers.SerializerMethodField()
     secondaryOcrDiscrepancies = serializers.SerializerMethodField()
 
+    hasLguCoverage = serializers.SerializerMethodField()
+    hasDocuments = serializers.SerializerMethodField()
+
     class Meta:
         model = tbl_documents
         fields = [
@@ -201,7 +204,8 @@ class AdminVerificationQueueSerializer(serializers.ModelSerializer):
             'faceLivenessMatchScore', 'ocrExtractedData', 'ocrDiscrepancies', 'ocrMatchScore',
             'isPackage', 'packageLabel', 'secondaryDocumentId', 'secondaryDocumentImage', 'secondaryDocumentType',
             'secondaryDocumentNumber', 'secondaryIssuedDate', 'secondaryValidityDate',
-            'secondaryStatus', 'secondaryNotes', 'secondaryOcrData', 'secondaryOcrDiscrepancies'
+            'secondaryStatus', 'secondaryNotes', 'secondaryOcrData', 'secondaryOcrDiscrepancies',
+            'hasLguCoverage', 'hasDocuments'
         ]
 
     def _get_companion_doc(self, obj):
@@ -517,15 +521,41 @@ class AdminVerificationQueueSerializer(serializers.ModelSerializer):
         return data
 
     def get_barangay(self, obj):
-        u = obj.user_profile
-        street = getattr(u, 'street', '') or ''
-        city = getattr(u, 'city', '') or ''
-        for b in ['Pagatpat', 'Canitoan']:
-            if b.lower() in street.lower() or b.lower() in city.lower():
+        u = getattr(obj, 'user_profile', None)
+        if not u:
+            return 'Unassigned'
+        brgy = (getattr(u, 'barangay', '') or '').strip()
+        if brgy:
+            return brgy
+        street = (getattr(u, 'street', '') or '').lower()
+        city = (getattr(u, 'city', '') or '').lower()
+        from accounts.models import tbl_user_profile
+        active_lgus = [
+            b.strip() for b in tbl_user_profile.objects.filter(
+                account_type='Barangay', is_active=True
+            ).exclude(barangay__isnull=True).exclude(barangay__exact='')
+            .values_list('barangay', flat=True) if b and b.strip()
+        ]
+        for b in active_lgus:
+            if b.lower() in street or b.lower() in city:
                 return b
-        if city and city not in ['Cagayan de Oro City', 'City of Cagayan De Oro', 'Cagayan de Oro']:
-            return city
-        return 'Pagatpat'
+        return 'Unassigned'
+
+    def get_hasLguCoverage(self, obj):
+        brgy = self.get_barangay(obj)
+        if not brgy or brgy.lower() == 'unassigned':
+            return False
+        from accounts.models import tbl_user_profile
+        active_lgus = [
+            b.strip().lower() for b in tbl_user_profile.objects.filter(
+                account_type='Barangay', is_active=True
+            ).exclude(barangay__isnull=True).exclude(barangay__exact='')
+            .values_list('barangay', flat=True) if b and b.strip()
+        ]
+        return brgy.strip().lower() in active_lgus
+
+    def get_hasDocuments(self, obj):
+        return True
 
     def get_contactNumber(self, obj):
         return getattr(obj.user_profile, 'contact_number', '') or '+639171234567'
