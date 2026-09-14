@@ -8,7 +8,7 @@ from django.core.cache import cache
 from django.contrib.auth import get_user_model
 from django.db import transaction, IntegrityError
 from django.db.models import Q
-from core.utils import check_valid_uuid
+from core.utils import check_valid_uuid, get_signed_cloudinary_url
 from .models import tbl_chat_message, tbl_chat_reaction, ALLOWED_EMOJIS
 from .serializers import (
     SendMessageSerializer,
@@ -533,27 +533,8 @@ class ChatInboxView(generics.GenericAPIView):
                 is_deleted=False
             ).count()
 
-            # Step 4: Build Cloudinary signed URL if partner has profile image
-            partner_profile_image = None
-            public_id = getattr(partner, 'profile_link', None)
-            if public_id:
-                if str(public_id).startswith('http://') or str(public_id).startswith('https://'):
-                    partner_profile_image = str(public_id)
-                else:
-                    try:
-                        partner_profile_image, _ = cloudinary.utils.cloudinary_url(
-                            public_id,
-                            type="authenticated",
-                            sign_url=True,
-                            width=120,
-                            height=120,
-                            crop="fill",
-                            gravity="face",
-                            quality="auto",
-                            fetch_format="auto"
-                        )
-                    except Exception:
-                        partner_profile_image = None
+            # Step 4: Build Cloudinary signed URL (Optimized WebP)
+            partner_profile_image = get_signed_cloudinary_url(getattr(partner, 'profile_link', None), as_avatar=True)
 
             # Format preview text for text vs image messages
             if last_msg.message_type == 'image':
