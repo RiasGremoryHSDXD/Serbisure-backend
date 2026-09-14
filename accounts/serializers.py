@@ -3,7 +3,12 @@ from django.db import IntegrityError
 from django.db.models import Q
 from .models import tbl_user_profile
 from datetime import date
-from core.utils import convert_title, check_input_letters, normalize_ph_phone_number
+from core.utils import (
+    convert_title,
+    check_input_letters,
+    normalize_ph_phone_number,
+    get_signed_cloudinary_url
+)
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from rest_framework.exceptions import AuthenticationFailed, ValidationError
 import uuid
@@ -249,19 +254,7 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
         token['nationality'] = user.nationality or 'Filipino'
         token['religion'] = user.religion or ''
 
-        public_id = user.profile_link
-
-        if not public_id:
-            return token
-        
-        temporary_url, _ = cloudinary.utils.cloudinary_url(
-            public_id,
-            type="authenticated",
-            sign_url=True
-        )
-
-        token['profile_link'] = temporary_url
-
+        token['profile_link'] = get_signed_cloudinary_url(user.profile_link, as_avatar=True)
         return token
     
 
@@ -300,19 +293,7 @@ class CustomLoginSerializer(TokenObtainPairSerializer):
         token['zipcode'] = user.zipcode or ''
         token['country'] = user.country or 'Philippines'
 
-        public_id = user.profile_link
-
-        if not public_id:
-            return token
-        
-        temporary_url, _ = cloudinary.utils.cloudinary_url(
-            public_id,
-            type="authenticated",
-            sign_url=True
-        )
-
-        token['profile_link'] = temporary_url
-
+        token['profile_link'] = get_signed_cloudinary_url(user.profile_link, as_avatar=True)
         return token
     
     def validate(self, attrs):
@@ -392,16 +373,7 @@ class ProfileImageUploadSerializer(serializers.ModelSerializer):
     def to_representation(self, instance):
         import cloudinary.utils
         representation = super().to_representation(instance)
-        public_id = instance.profile_link
-
-        if public_id:
-            temporary_url, _ = cloudinary.utils.cloudinary_url(
-                public_id,
-                type="authenticated",
-                sign_url=True,
-            )
-            representation['profile_link'] = temporary_url
-
+        representation['profile_link'] = get_signed_cloudinary_url(instance.profile_link, as_avatar=True)
         return representation
 
     def validate_profile_image(self, value):
@@ -721,18 +693,7 @@ class PublicProfileSerializer(serializers.ModelSerializer):
         return ' '.join(p for p in parts if p).strip()
 
     def get_profile_link(self, obj):
-        if not obj.profile_link:
-            return None
-        import cloudinary.utils
-        try:
-            temporary_url, _ = cloudinary.utils.cloudinary_url(
-                obj.profile_link,
-                type="authenticated",
-                sign_url=True,
-            )
-            return temporary_url
-        except Exception:
-            return None
+        return get_signed_cloudinary_url(obj.profile_link, as_avatar=True)
 
     def get_resume_url(self, obj):
         if not obj.resume_url or obj.account_type != 'Kasambahay':

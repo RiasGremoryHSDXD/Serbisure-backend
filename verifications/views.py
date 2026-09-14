@@ -8,6 +8,7 @@ from rest_framework.throttling import UserRateThrottle
 from rest_framework.exceptions import Throttled
 from rest_framework import status
 from rest_framework.response import Response
+from core.utils import get_signed_cloudinary_url
 import math
 class DocumentUploadThrottle(UserRateThrottle):
     rate = '20/d'
@@ -323,17 +324,10 @@ class AdminVerificationQueueView(generics.ListAPIView):
                 if role_norm not in ['HOMEOWNER', 'KASAMBAHAY']:
                     role_norm = 'HOMEOWNER'
 
-                avatar = u.profile_link or f"https://ui-avatars.com/api/?name={u.first_name}+{u.last_name}&background=F5A623&color=fff"
-                if u.profile_link and not (u.profile_link.startswith('http://') or u.profile_link.startswith('https://')):
-                    try:
-                        temp_url, _ = cloudinary.utils.cloudinary_url(
-                            u.profile_link,
-                            type="authenticated",
-                            sign_url=True,
-                        )
-                        avatar = temp_url
-                    except Exception:
-                        pass
+                avatar = (
+                    get_signed_cloudinary_url(u.profile_link, as_avatar=True)
+                    or f"https://ui-avatars.com/api/?name={u.first_name}+{u.last_name}&background=F5A623&color=fff"
+                )
 
                 brgy = (u.barangay or '').strip()
                 if not brgy:

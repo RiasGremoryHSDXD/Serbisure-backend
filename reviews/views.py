@@ -6,7 +6,7 @@ from rest_framework.response import Response
 from django.core.cache import cache
 from django.contrib.auth import get_user_model
 from django.db.models import Avg
-from core.utils import check_valid_uuid
+from core.utils import check_valid_uuid, get_signed_cloudinary_url
 from .models import tbl_review
 from .serializers import (
     CreateReviewSerializer,
@@ -201,18 +201,8 @@ class ReviewSummaryView(generics.GenericAPIView):
             if rating in rating_breakdown:
                 rating_breakdown[rating] += 1
 
-        # Profile image resolution
-        profile_url = None
-        public_id = getattr(target_user, 'profile_link', None)
-        if public_id:
-            try:
-                profile_url, _ = cloudinary.utils.cloudinary_url(
-                    public_id,
-                    type="authenticated",
-                    sign_url=True
-                )
-            except Exception:
-                profile_url = None
+        # Profile image resolution (Optimized WebP)
+        profile_url = get_signed_cloudinary_url(getattr(target_user, 'profile_link', None), as_avatar=True)
 
         first = target_user.first_name or ''
         last = target_user.last_name or ''

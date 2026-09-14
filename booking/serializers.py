@@ -5,24 +5,14 @@ from .wage_policy import get_minimum_daily_wage, get_monthly_equivalent
 from django.utils import timezone
 from reviews.models import tbl_review
 from django.db.models import Avg
-import cloudinary.utils
+from core.utils import get_signed_cloudinary_url
 
 
 def get_signed_avatar(user):
     if not user:
         return None
     public_id = getattr(user, 'profile_link', None)
-    if not public_id:
-        return None
-    try:
-        url, _ = cloudinary.utils.cloudinary_url(
-            public_id,
-            type="authenticated",
-            sign_url=True
-        )
-        return url
-    except Exception:
-        return None
+    return get_signed_cloudinary_url(public_id, as_avatar=True)
 
 
 class BookingSerializer(serializers.ModelSerializer):

@@ -1,6 +1,7 @@
 from rest_framework import serializers
 from .models import tbl_documents, tbl_audit_logs
 from accounts.models import tbl_user_profile
+from core.utils import get_signed_cloudinary_url
 import cloudinary.utils
 
 
@@ -41,15 +42,7 @@ class AdminDocumentDetailSerializer(serializers.ModelSerializer):
         ]
 
     def get_document_image_url(self, instance):
-        public_id = instance.document_url
-        if not public_id:
-            return None
-        url, _ = cloudinary.utils.cloudinary_url(
-            public_id,
-            type="authenticated",
-            sign_url=True,
-        )
-        return url
+        return get_signed_cloudinary_url(instance.document_url, as_avatar=False)
 
     def get_verifyBy_email(self, instance):
         return instance.verifyBy.email if instance.verifyBy else None
@@ -87,15 +80,7 @@ class UserDocumentStatusSerializer(serializers.ModelSerializer):
         ]
 
     def get_document_image_url(self, instance):
-        public_id = instance.document_url
-        if not public_id:
-            return None
-        url, _ = cloudinary.utils.cloudinary_url(
-            public_id,
-            type="authenticated",
-            sign_url=True,
-        )
-        return url
+        return get_signed_cloudinary_url(instance.document_url, as_avatar=False)
 
 
 class AdminAuditLogSerializer(serializers.ModelSerializer):

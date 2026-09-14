@@ -19,7 +19,7 @@ from rest_framework_simplejwt.views import TokenObtainPairView
 from rest_framework.throttling import AnonRateThrottle, UserRateThrottle
 from rest_framework.exceptions import Throttled
 from django.core.cache import cache
-from core.utils import check_valid_uuid
+from core.utils import check_valid_uuid, get_signed_cloudinary_url
 import math
 from drf_spectacular.utils import extend_schema, OpenApiParameter
 from drf_spectacular.types import OpenApiTypes
@@ -226,18 +226,10 @@ class AdminUserListView(generics.ListAPIView):
             if role_norm not in ['HOMEOWNER', 'KASAMBAHAY']:
                 role_norm = 'HOMEOWNER'
 
-            avatar = u.profile_link or f"https://ui-avatars.com/api/?name={u.first_name}+{u.last_name}&background=F5A623&color=fff"
-            if u.profile_link and not (u.profile_link.startswith('http://') or u.profile_link.startswith('https://')):
-                try:
-                    import cloudinary.utils
-                    temp_url, _ = cloudinary.utils.cloudinary_url(
-                        u.profile_link,
-                        type="authenticated",
-                        sign_url=True,
-                    )
-                    avatar = temp_url
-                except Exception:
-                    pass
+            avatar = (
+                get_signed_cloudinary_url(u.profile_link, as_avatar=True)
+                or f"https://ui-avatars.com/api/?name={u.first_name}+{u.last_name}&background=F5A623&color=fff"
+            )
             is_verified = u.verification_status == 'Verified'
 
             brgy = (u.barangay or '').strip()
@@ -436,16 +428,11 @@ class AdminDashboardActivityView(APIView):
             poster_name = f"{poster.first_name} {poster.last_name}".strip() or poster.username
             poster_role = (getattr(poster, 'account_type', '') or '').strip()
 
-            # Build avatar URL for poster
-            poster_avatar = poster.profile_link or f"https://ui-avatars.com/api/?name={poster.first_name}+{poster.last_name}&background=F5A623&color=fff"
-            if poster.profile_link and not (poster.profile_link.startswith('http://') or poster.profile_link.startswith('https://')):
-                try:
-                    temp_url, _ = cloudinary.utils.cloudinary_url(
-                        poster.profile_link, type='authenticated', sign_url=True
-                    )
-                    poster_avatar = temp_url
-                except Exception:
-                    pass
+            # Build avatar URL for poster (Optimized WebP)
+            poster_avatar = (
+                get_signed_cloudinary_url(poster.profile_link, as_avatar=True)
+                or f"https://ui-avatars.com/api/?name={poster.first_name}+{poster.last_name}&background=F5A623&color=fff"
+            )
 
             # Try to find assigned counterpart
             assignment = tbl_booking_assignment.objects.filter(booking_id=booking).select_related('accepter_id').first()
@@ -454,15 +441,10 @@ class AdminDashboardActivityView(APIView):
             if assignment and assignment.accepter_id:
                 w = assignment.accepter_id
                 accepter_name = f"{w.first_name} {w.last_name}".strip() or w.username
-                accepter_avatar = w.profile_link or f"https://ui-avatars.com/api/?name={w.first_name}+{w.last_name}&background=0D0D11&color=fff"
-                if w.profile_link and not (w.profile_link.startswith('http://') or w.profile_link.startswith('https://')):
-                    try:
-                        temp_url, _ = cloudinary.utils.cloudinary_url(
-                            w.profile_link, type='authenticated', sign_url=True
-                        )
-                        accepter_avatar = temp_url
-                    except Exception:
-                        pass
+                accepter_avatar = (
+                    get_signed_cloudinary_url(w.profile_link, as_avatar=True)
+                    or f"https://ui-avatars.com/api/?name={w.first_name}+{w.last_name}&background=0D0D11&color=fff"
+                )
 
             unassigned_avatar = 'https://ui-avatars.com/api/?name=?&background=E2E8F0&color=94A3B8'
 
@@ -566,6 +548,20 @@ class AdminMonthlyTrendView(APIView):
             )
         total_workers = workers_qs.count()
 
+        # Currently active bookings and worker assignments
+        active_booking_ids = tbl_booking.objects.filter(
+            booking_status__in=['Accepted', 'InProgress']
+        ).values_list('booking_id', flat=True)
+        assigned_worker_ids = tbl_booking_assignment.objects.filter(
+            booking_id__in=active_booking_ids
+        ).values_list('accepter_id', flat=True).distinct()
+
+        # Currently employed/on-the-job in this barangay scope
+        current_employed_count = workers_qs.filter(
+            Q(is_on_job=True) | Q(id__in=assigned_worker_ids)
+        ).distinct().count()
+        current_available_count = max(0, total_workers - current_employed_count)
+
         # Monthly booking aggregation for the past 12 calendar months
         now = timezone.now()
         months = []
@@ -581,31 +577,41 @@ class AdminMonthlyTrendView(APIView):
             last_day = calendar.monthrange(year_offset, month_offset)[1]
             month_end = month_start.replace(day=last_day, hour=23, minute=59, second=59)
 
-            # Count bookings accepted or in-progress during this month
-            month_bookings_qs = tbl_booking.objects.filter(
-                createdAt__gte=month_start,
-                createdAt__lte=month_end,
-                booking_status__in=['Accepted', 'InProgress', 'Completed']
-            )
-            if barangay_param and barangay_param.upper() not in ['ALL', 'ALL BARANGAYS']:
-                month_bookings_qs = month_bookings_qs.filter(
-                    Q(poster_id__barangay__iexact=barangay_param) |
-                    Q(poster_id__city__icontains=barangay_param) |
-                    Q(poster_id__street__icontains=barangay_param)
+            # Check if this iteration represents the current calendar month
+            if month_offset == now.month and year_offset == now.year:
+                employed_count = current_employed_count
+                available_count = current_available_count
+            else:
+                # Count bookings accepted or in-progress during this past month
+                month_bookings_qs = tbl_booking.objects.filter(
+                    createdAt__gte=month_start,
+                    createdAt__lte=month_end,
+                    booking_status__in=['Accepted', 'InProgress', 'Completed']
                 )
+                month_employed_ids = tbl_booking_assignment.objects.filter(
+                    booking_id__in=month_bookings_qs.values_list('booking_id', flat=True),
+                    accepter_id__in=workers_qs.values_list('id', flat=True)
+                ).values_list('accepter_id', flat=True).distinct()
 
-            employed_count = month_bookings_qs.values('assignments__accepter_id').distinct().count()
-            available_count = max(0, total_workers - employed_count)
+                employed_count = month_employed_ids.count()
+                available_count = max(0, total_workers - employed_count)
 
             months.append({
                 'month': month_start.strftime('%b'),
                 'year': year_offset,
                 'employed': employed_count,
+                'on_the_job': employed_count,
                 'available': available_count,
                 'total': total_workers,
             })
 
-        return Response({'trend': months}, status=status.HTTP_200_OK)
+        return Response({
+            'trend': months,
+            'barangay': barangay_param or 'All Barangays',
+            'total_workers': total_workers,
+            'current_on_the_job': current_employed_count,
+            'current_available': current_available_count,
+        }, status=status.HTTP_200_OK)
 
 
 class AdminLoginView(APIView):
@@ -652,13 +658,10 @@ class AdminLoginView(APIView):
         from rest_framework_simplejwt.tokens import RefreshToken
         refresh = RefreshToken.for_user(user)
 
-        avatar = user.profile_link or f"https://ui-avatars.com/api/?name={user.first_name}+{user.last_name}&background=0D0D11&color=fff"
-        if user.profile_link and not (user.profile_link.startswith('http://') or user.profile_link.startswith('https://')):
-            try:
-                import cloudinary.utils
-                avatar, _ = cloudinary.utils.cloudinary_url(user.profile_link, type='authenticated', sign_url=True)
-            except Exception:
-                pass
+        avatar = (
+            get_signed_cloudinary_url(user.profile_link, as_avatar=True)
+            or f"https://ui-avatars.com/api/?name={user.first_name}+{user.last_name}&background=0D0D11&color=fff"
+        )
 
         return Response({
             'success': True,
