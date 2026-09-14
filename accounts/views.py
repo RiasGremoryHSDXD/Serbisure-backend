@@ -431,9 +431,10 @@ class AdminDashboardActivityView(APIView):
             )
 
         result = []
-        for booking in bookings_qs[:15]:
+        for booking in bookings_qs[:100]:
             poster = booking.poster_id
             poster_name = f"{poster.first_name} {poster.last_name}".strip() or poster.username
+            poster_role = (getattr(poster, 'account_type', '') or '').strip()
 
             # Build avatar URL for poster
             poster_avatar = poster.profile_link or f"https://ui-avatars.com/api/?name={poster.first_name}+{poster.last_name}&background=F5A623&color=fff"
@@ -446,22 +447,39 @@ class AdminDashboardActivityView(APIView):
                 except Exception:
                     pass
 
-            # Try to find assigned worker (Kasambahay)
+            # Try to find assigned counterpart
             assignment = tbl_booking_assignment.objects.filter(booking_id=booking).select_related('accepter_id').first()
-            worker_name = 'Unassigned'
-            worker_avatar = 'https://ui-avatars.com/api/?name=?&background=E2E8F0&color=94A3B8'
-            if assignment:
+            accepter_name = None
+            accepter_avatar = None
+            if assignment and assignment.accepter_id:
                 w = assignment.accepter_id
-                worker_name = f"{w.first_name} {w.last_name}".strip() or w.username
-                worker_avatar = w.profile_link or f"https://ui-avatars.com/api/?name={w.first_name}+{w.last_name}&background=0D0D11&color=fff"
+                accepter_name = f"{w.first_name} {w.last_name}".strip() or w.username
+                accepter_avatar = w.profile_link or f"https://ui-avatars.com/api/?name={w.first_name}+{w.last_name}&background=0D0D11&color=fff"
                 if w.profile_link and not (w.profile_link.startswith('http://') or w.profile_link.startswith('https://')):
                     try:
                         temp_url, _ = cloudinary.utils.cloudinary_url(
                             w.profile_link, type='authenticated', sign_url=True
                         )
-                        worker_avatar = temp_url
+                        accepter_avatar = temp_url
                     except Exception:
                         pass
+
+            unassigned_avatar = 'https://ui-avatars.com/api/?name=?&background=E2E8F0&color=94A3B8'
+
+            # Role-aware assignment:
+            # If poster is Kasambahay (offering services / looking for job), Kasambahay is the worker.
+            # The Employer is the counterpart who hired/accepted them (or 'Unassigned').
+            if poster_role.lower() == 'kasambahay':
+                worker_name = poster_name
+                worker_avatar = poster_avatar
+                homeowner_name = accepter_name or 'Unassigned'
+                homeowner_avatar = accepter_avatar or unassigned_avatar
+            else:
+                # Homeowner posted the job request, Kasambahay is the counterpart (or 'Unassigned')
+                homeowner_name = poster_name
+                homeowner_avatar = poster_avatar
+                worker_name = accepter_name or 'Unassigned'
+                worker_avatar = accepter_avatar or unassigned_avatar
 
             # RA 10361 compliance checks
             # Minimum wage baseline: ₱5,000/mo for CDO Kasambahay
@@ -501,8 +519,8 @@ class AdminDashboardActivityView(APIView):
 
             result.append({
                 'id': str(booking.booking_id),
-                'homeownerName': poster_name,
-                'homeownerAvatar': poster_avatar,
+                'homeownerName': homeowner_name,
+                'homeownerAvatar': homeowner_avatar,
                 'workerName': worker_name,
                 'workerAvatar': worker_avatar,
                 'serviceCategory': ', '.join(booking.service_category),
