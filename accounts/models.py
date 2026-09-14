@@ -181,7 +181,14 @@ class tbl_user_profile(AbstractUser):
         null=True
     )
     
-    street = models.CharField(
+    region = models.CharField(
+        max_length=100,
+        blank=True,
+        null=True,
+        help_text="Philippine region (e.g. Region X - Northern Mindanao)"
+    )
+
+    province = models.CharField(
         max_length=100, 
         blank=True, 
         null=True
@@ -193,10 +200,18 @@ class tbl_user_profile(AbstractUser):
         null=True
     )
 
-    province = models.CharField(
+    barangay = models.CharField(
+        max_length=100,
+        blank=True,
+        null=True,
+        help_text="Barangay name within the city/municipality"
+    )
+
+    street = models.CharField(
         max_length=100, 
         blank=True, 
-        null=True
+        null=True,
+        help_text="House/Lot/Block number, street name, zone, or subdivision only. NOT the barangay."
     )
     
     zipcode = models.CharField(

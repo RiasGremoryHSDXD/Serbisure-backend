@@ -92,7 +92,7 @@ def _call_groq_ai_verification(raw_text: str, document_type: str, user_profile) 
     user_first = getattr(user_profile, 'first_name', '') or ''
     user_last = getattr(user_profile, 'last_name', '') or ''
     user_full_name = f"{user_first} {user_last}".strip()
-    user_barangay = getattr(user_profile, 'city', '') or getattr(user_profile, 'street', '') or 'Pagatpat'
+    user_barangay = getattr(user_profile, 'barangay', '') or getattr(user_profile, 'city', '') or getattr(user_profile, 'street', '') or 'Pagatpat'
 
     system_prompt = (
         "You are an expert AI document verification specialist for SerbiSure (a domestic labor compliance platform in the Philippines). "
@@ -169,7 +169,7 @@ def parse_extracted_document(raw_text: str, document_type: str, user_profile) ->
     user_first = getattr(user_profile, 'first_name', '') or ''
     user_last = getattr(user_profile, 'last_name', '') or ''
     user_full_name = f"{user_first} {user_last}".strip()
-    user_barangay = getattr(user_profile, 'street', '') or getattr(user_profile, 'city', '') or 'Pagatpat'
+    user_barangay = getattr(user_profile, 'barangay', '') or getattr(user_profile, 'street', '') or getattr(user_profile, 'city', '') or 'Pagatpat'
     
     # 1. Try Groq AI Verification first if text is available
     if raw_text:

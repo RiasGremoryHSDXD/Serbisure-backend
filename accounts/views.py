@@ -185,17 +185,39 @@ class AdminUserListView(generics.ListAPIView):
     def get(self, request, *args, **kwargs):
         role_param = request.query_params.get('role')
         barangay_param = request.query_params.get('barangay')
+
+        # Strictly lock LGU officers to their assigned barangay
+        if request.user.is_authenticated and getattr(request.user, 'account_type', None) == 'Barangay':
+            barangay_param = request.user.barangay
+
+        # Dynamic active LGU barangay set (accounts with account_type='Barangay')
+        active_lgus = [
+            b.strip() for b in tbl_user_profile.objects.filter(
+                account_type='Barangay', is_active=True
+            ).exclude(barangay__isnull=True).exclude(barangay__exact='')
+            .values_list('barangay', flat=True) if b and b.strip()
+        ]
+        active_lgus_lower = [b.lower() for b in active_lgus]
+
         users_qs = tbl_user_profile.objects.filter(account_type__in=['Homeowner', 'Kasambahay']).order_by('-date_joined')
 
         if role_param and role_param.upper() != 'ALL':
             users_qs = users_qs.filter(account_type__iexact=role_param)
 
-        if barangay_param and barangay_param.upper() not in ['ALL', 'ALL BARANGAYS']:
-            from django.db.models import Q
-            users_qs = users_qs.filter(
-                Q(city__icontains=barangay_param) |
-                Q(street__icontains=barangay_param)
-            )
+        from django.db.models import Q
+        if barangay_param:
+            if barangay_param.upper() in ['UNASSIGNED', 'NO LGU COVERAGE', 'NO_LGU']:
+                # Exclude all users that belong to active LGU barangays
+                q_assigned = Q()
+                for b in active_lgus:
+                    q_assigned |= Q(barangay__iexact=b)
+                users_qs = users_qs.exclude(q_assigned)
+            elif barangay_param.upper() not in ['ALL', 'ALL BARANGAYS']:
+                users_qs = users_qs.filter(
+                    Q(barangay__iexact=barangay_param) |
+                    Q(city__icontains=barangay_param) |
+                    Q(street__icontains=barangay_param)
+                )
 
         data = []
         for u in users_qs:
@@ -218,13 +240,18 @@ class AdminUserListView(generics.ListAPIView):
                     pass
             is_verified = u.verification_status == 'Verified'
 
-            brgy = 'Pagatpat'
-            street_lower = (u.street or '').lower()
-            city_lower = (u.city or '').lower()
-            for b in ['Pagatpat', 'Canitoan']:
-                if b.lower() in street_lower or b.lower() in city_lower:
-                    brgy = b
-                    break
+            brgy = (u.barangay or '').strip()
+            if not brgy:
+                street_lower = (u.street or '').lower()
+                city_lower = (u.city or '').lower()
+                for b in active_lgus:
+                    if b.lower() in street_lower or b.lower() in city_lower:
+                        brgy = b
+                        break
+            if not brgy:
+                brgy = 'Unassigned'
+
+            has_lgu_coverage = bool(brgy and brgy.lower() in active_lgus_lower)
 
             user_item = {
                 "id": str(u.id),
@@ -237,6 +264,7 @@ class AdminUserListView(generics.ListAPIView):
                 "barangay": brgy,
                 "city": u.city or "Cagayan de Oro City",
                 "verified": is_verified,
+                "hasLguCoverage": has_lgu_coverage,
                 "status": "ACTIVE" if u.is_active else "SUSPENDED",
                 "joinedDate": u.date_joined.strftime('%b %d, %Y') if u.date_joined else "Recent",
                 "completedJobs": 0,
@@ -262,17 +290,42 @@ class AdminDashboardStatsView(APIView):
     def get(self, request, *args, **kwargs):
         barangay_param = request.query_params.get('barangay')
         
+        # Strictly lock LGU officers to their assigned barangay
+        if request.user.is_authenticated and getattr(request.user, 'account_type', None) == 'Barangay':
+            barangay_param = request.user.barangay
+
+        # Dynamic Barangay Breakdowns
+        # SOURCE OF TRUTH: only barangays with an active LGU Barangay account are included.
+        lgu_barangay_names = list(
+            tbl_user_profile.objects.filter(
+                account_type='Barangay',
+                is_active=True,
+            )
+            .exclude(barangay__isnull=True)
+            .exclude(barangay='')
+            .values_list('barangay', flat=True)
+            .distinct()
+        )
+        all_barangays = sorted(set(b.strip().title() for b in lgu_barangay_names if b and b.strip()))
+
         workers_qs = tbl_user_profile.objects.filter(account_type='Kasambahay')
         homeowners_qs = tbl_user_profile.objects.filter(account_type='Homeowner')
         
-        if barangay_param and barangay_param.upper() not in ['ALL', 'ALL BARANGAYS']:
-            from django.db.models import Q
-            workers_qs = workers_qs.filter(
-                Q(city__icontains=barangay_param) | Q(street__icontains=barangay_param)
-            )
-            homeowners_qs = homeowners_qs.filter(
-                Q(city__icontains=barangay_param) | Q(street__icontains=barangay_param)
-            )
+        from django.db.models import Q
+        if barangay_param:
+            if barangay_param.upper() in ['UNASSIGNED', 'NO LGU COVERAGE', 'NO_LGU']:
+                q_assigned = Q()
+                for b in all_barangays:
+                    q_assigned |= Q(barangay__iexact=b)
+                workers_qs = workers_qs.exclude(q_assigned)
+                homeowners_qs = homeowners_qs.exclude(q_assigned)
+            elif barangay_param.upper() not in ['ALL', 'ALL BARANGAYS']:
+                workers_qs = workers_qs.filter(
+                    Q(barangay__iexact=barangay_param) | Q(city__icontains=barangay_param) | Q(street__icontains=barangay_param)
+                )
+                homeowners_qs = homeowners_qs.filter(
+                    Q(barangay__iexact=barangay_param) | Q(city__icontains=barangay_param) | Q(street__icontains=barangay_param)
+                )
 
         total_workers = workers_qs.count()
         total_homeowners = homeowners_qs.count()
@@ -295,12 +348,14 @@ class AdminDashboardStatsView(APIView):
         employment_ratio = round((employed / total_workers * 100)) if total_workers > 0 else 0
 
         # Dynamic Barangay Breakdowns
+        # SOURCE OF TRUTH: only barangays with an active LGU Barangay account are included.
+        # Homeowners/Kasambahays who live in Agusan/Carmen will NOT pollute this list.
         barangay_breakdown = []
-        for b_name in ['Pagatpat', 'Canitoan']:
+        for b_name in all_barangays:
             b_workers = tbl_user_profile.objects.filter(
                 account_type='Kasambahay'
             ).filter(
-                Q(city__icontains=b_name) | Q(street__icontains=b_name)
+                Q(barangay__iexact=b_name) | Q(city__icontains=b_name) | Q(street__icontains=b_name)
             )
             b_total = b_workers.count()
             b_employed = b_workers.filter(
@@ -317,11 +372,22 @@ class AdminDashboardStatsView(APIView):
                 "status": "ACTIVE"
             })
 
-        # Pending verification queue count
+        # Pending verification queue count (scoped to current perspective)
         from verifications.models import tbl_documents
-        pending_verifications = tbl_documents.objects.filter(
-            verification_status='Pending'
-        ).count()
+        pending_doc_qs = tbl_documents.objects.filter(verification_status='Pending')
+        if barangay_param:
+            if barangay_param.upper() in ['UNASSIGNED', 'NO LGU COVERAGE', 'NO_LGU']:
+                q_assigned_doc = Q()
+                for b in all_barangays:
+                    q_assigned_doc |= Q(user_profile__barangay__iexact=b)
+                pending_doc_qs = pending_doc_qs.exclude(q_assigned_doc)
+            elif barangay_param.upper() not in ['ALL', 'ALL BARANGAYS']:
+                pending_doc_qs = pending_doc_qs.filter(
+                    Q(user_profile__barangay__iexact=barangay_param) |
+                    Q(user_profile__city__icontains=barangay_param) |
+                    Q(user_profile__street__icontains=barangay_param)
+                )
+        pending_verifications = pending_doc_qs.count()
 
         return Response({
             "metrics": {
@@ -333,6 +399,303 @@ class AdminDashboardStatsView(APIView):
                 "pendingVerifications": pending_verifications,
             },
             "barangays": barangay_breakdown,
+        }, status=status.HTTP_200_OK)
+
+
+class AdminDashboardActivityView(APIView):
+    """
+    Returns recent booking placements for the admin dashboard activity table.
+    Queries real tbl_booking + tbl_booking_assignment records, scoped optionally by barangay.
+    Returns the latest 10 accepted/in-progress/completed bookings.
+    """
+    permission_classes = [AllowAny]
+
+    def get(self, request, *args, **kwargs):
+        barangay_param = request.query_params.get('barangay')
+        from booking.models import tbl_booking, tbl_booking_assignment
+        from django.db.models import Q
+        import cloudinary.utils
+
+        # Get bookings ordered by most recent first
+        bookings_qs = tbl_booking.objects.select_related('poster_id').order_by('-createdAt')
+
+        # Optional barangay scope
+        if barangay_param and barangay_param.upper() not in ['ALL', 'ALL BARANGAYS']:
+            bookings_qs = bookings_qs.filter(
+                Q(poster_id__barangay__iexact=barangay_param) |
+                Q(poster_id__barangay__icontains=barangay_param) |
+                Q(poster_id__city__icontains=barangay_param) |
+                Q(poster_id__street__icontains=barangay_param) |
+                Q(service_address__icontains=barangay_param)
+            )
+
+        result = []
+        for booking in bookings_qs[:15]:
+            poster = booking.poster_id
+            poster_name = f"{poster.first_name} {poster.last_name}".strip() or poster.username
+
+            # Build avatar URL for poster
+            poster_avatar = poster.profile_link or f"https://ui-avatars.com/api/?name={poster.first_name}+{poster.last_name}&background=F5A623&color=fff"
+            if poster.profile_link and not (poster.profile_link.startswith('http://') or poster.profile_link.startswith('https://')):
+                try:
+                    temp_url, _ = cloudinary.utils.cloudinary_url(
+                        poster.profile_link, type='authenticated', sign_url=True
+                    )
+                    poster_avatar = temp_url
+                except Exception:
+                    pass
+
+            # Try to find assigned worker (Kasambahay)
+            assignment = tbl_booking_assignment.objects.filter(booking_id=booking).select_related('accepter_id').first()
+            worker_name = 'Unassigned'
+            worker_avatar = 'https://ui-avatars.com/api/?name=?&background=E2E8F0&color=94A3B8'
+            if assignment:
+                w = assignment.accepter_id
+                worker_name = f"{w.first_name} {w.last_name}".strip() or w.username
+                worker_avatar = w.profile_link or f"https://ui-avatars.com/api/?name={w.first_name}+{w.last_name}&background=0D0D11&color=fff"
+                if w.profile_link and not (w.profile_link.startswith('http://') or w.profile_link.startswith('https://')):
+                    try:
+                        temp_url, _ = cloudinary.utils.cloudinary_url(
+                            w.profile_link, type='authenticated', sign_url=True
+                        )
+                        worker_avatar = temp_url
+                    except Exception:
+                        pass
+
+            # RA 10361 compliance checks
+            # Minimum wage baseline: ₱5,000/mo for CDO Kasambahay
+            MIN_WAGE = 5000.0
+            daily_rate = float(booking.daily_rate)
+            # Estimate monthly from daily_rate * 26 working days
+            monthly_estimate = daily_rate * 26
+            is_below_min = monthly_estimate < MIN_WAGE
+
+            # Short-term capping: count all short_term bookings by same poster
+            short_term_count = tbl_booking.objects.filter(
+                poster_id=poster,
+                booking_type='short_term',
+                booking_status__in=['Accepted', 'InProgress', 'Completed']
+            ).count()
+            is_capped = short_term_count >= 3
+
+            if is_below_min:
+                compliance_status = 'BELOW_MINIMUM_WAGE'
+            elif is_capped and booking.booking_type == 'short_term':
+                compliance_status = 'FLAGGED_THROTTLED'
+            else:
+                compliance_status = 'COMPLIANT'
+
+            # Contract type label
+            contract_type = 'Formal Kasambahay (Long-Term)' if booking.booking_type == 'long_term' else 'Short-Term On-Demand'
+
+            # Barangay
+            brgy = poster.barangay or ''
+            if not brgy:
+                for b_name in ['Pagatpat', 'Canitoan']:
+                    if b_name.lower() in (poster.street or '').lower() or b_name.lower() in (poster.city or '').lower():
+                        brgy = b_name
+                        break
+            if not brgy:
+                brgy = 'Unknown'
+
+            result.append({
+                'id': str(booking.booking_id),
+                'homeownerName': poster_name,
+                'homeownerAvatar': poster_avatar,
+                'workerName': worker_name,
+                'workerAvatar': worker_avatar,
+                'serviceCategory': ', '.join(booking.service_category),
+                'monthlyBookingsCount': short_term_count,
+                'isCapped': is_capped,
+                'offeredWage': round(monthly_estimate),
+                'dailyRate': daily_rate,
+                'minimumWageBaseline': MIN_WAGE,
+                'isBelowMinimumWage': is_below_min,
+                'contractType': contract_type,
+                'bookingType': booking.booking_type,
+                'bookingStatus': booking.booking_status,
+                'startDate': booking.start_time.strftime('%b %d, %Y') if booking.start_time else 'TBD',
+                'status': compliance_status,
+                'barangay': brgy,
+                'createdAt': booking.createdAt.isoformat() if booking.createdAt else None,
+            })
+
+        return Response({'bookings': result, 'count': len(result)}, status=status.HTTP_200_OK)
+
+
+class AdminMonthlyTrendView(APIView):
+    """
+    Returns monthly employment trend data for the last 12 months.
+    Computes employed/available counts per calendar month from real booking data.
+    """
+    permission_classes = [AllowAny]
+
+    def get(self, request, *args, **kwargs):
+        from booking.models import tbl_booking, tbl_booking_assignment
+        from django.db.models import Q, Count
+        from django.db.models.functions import TruncMonth
+        from django.utils import timezone
+        import calendar
+
+        barangay_param = request.query_params.get('barangay')
+
+        # Get total registered kasambahays (optional barangay scope)
+        workers_qs = tbl_user_profile.objects.filter(account_type='Kasambahay')
+        if barangay_param and barangay_param.upper() not in ['ALL', 'ALL BARANGAYS']:
+            workers_qs = workers_qs.filter(
+                Q(barangay__iexact=barangay_param) | Q(city__icontains=barangay_param) | Q(street__icontains=barangay_param)
+            )
+        total_workers = workers_qs.count()
+
+        # Monthly booking aggregation for the past 12 calendar months
+        now = timezone.now()
+        months = []
+        for i in range(11, -1, -1):
+            # Compute month offset
+            month_offset = now.month - i
+            year_offset = now.year
+            while month_offset <= 0:
+                month_offset += 12
+                year_offset -= 1
+
+            month_start = now.replace(year=year_offset, month=month_offset, day=1, hour=0, minute=0, second=0, microsecond=0)
+            last_day = calendar.monthrange(year_offset, month_offset)[1]
+            month_end = month_start.replace(day=last_day, hour=23, minute=59, second=59)
+
+            # Count bookings accepted or in-progress during this month
+            month_bookings_qs = tbl_booking.objects.filter(
+                createdAt__gte=month_start,
+                createdAt__lte=month_end,
+                booking_status__in=['Accepted', 'InProgress', 'Completed']
+            )
+            if barangay_param and barangay_param.upper() not in ['ALL', 'ALL BARANGAYS']:
+                month_bookings_qs = month_bookings_qs.filter(
+                    Q(poster_id__barangay__iexact=barangay_param) |
+                    Q(poster_id__city__icontains=barangay_param) |
+                    Q(poster_id__street__icontains=barangay_param)
+                )
+
+            employed_count = month_bookings_qs.values('assignments__accepter_id').distinct().count()
+            available_count = max(0, total_workers - employed_count)
+
+            months.append({
+                'month': month_start.strftime('%b'),
+                'year': year_offset,
+                'employed': employed_count,
+                'available': available_count,
+                'total': total_workers,
+            })
+
+        return Response({'trend': months}, status=status.HTTP_200_OK)
+
+
+class AdminLoginView(APIView):
+    """
+    Dedicated authentication endpoint for Web Admin Portal (Superadmin and Barangay LGU officers).
+    Allows any user with account_type in ['Admin', 'Barangay'] or is_staff/is_superuser to log in.
+    Returns their profile, role, and assigned barangay.
+    """
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        raw_identifier = (request.data.get('username') or request.data.get('email') or '').strip()
+        password = (request.data.get('password') or '').strip()
+
+        if not raw_identifier or not password:
+            return Response({'error': 'Please provide both username/email and password.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        from django.db.models import Q
+        user = tbl_user_profile.objects.filter(
+            Q(email__iexact=raw_identifier) | Q(username__iexact=raw_identifier)
+        ).first()
+
+        if user is None or not user.check_password(password):
+            return Response({'error': 'Invalid credentials. Please check your username and password.'}, status=status.HTTP_401_UNAUTHORIZED)
+
+        if not user.is_active:
+            return Response({'error': 'This administrative account has been deactivated.'}, status=status.HTTP_403_FORBIDDEN)
+
+        if user.account_type == 'Barangay':
+            # Guard: LGU account must have a barangay assigned or login is blocked
+            if not user.barangay or not user.barangay.strip():
+                return Response(
+                    {'error': 'Your LGU account is not assigned to a barangay. Please contact the Superadmin to fix your account.'},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+            role = 'ADMIN'
+            barangay = user.barangay.strip().title()
+        elif user.account_type == 'Admin' or user.is_superuser or user.is_staff:
+            role = 'SUPERADMIN'
+            barangay = 'All Barangays'
+        else:
+            return Response({'error': 'Access denied. Only Superadmins and Barangay Officers can access this portal.'}, status=status.HTTP_403_FORBIDDEN)
+
+        from rest_framework_simplejwt.tokens import RefreshToken
+        refresh = RefreshToken.for_user(user)
+
+        avatar = user.profile_link or f"https://ui-avatars.com/api/?name={user.first_name}+{user.last_name}&background=0D0D11&color=fff"
+        if user.profile_link and not (user.profile_link.startswith('http://') or user.profile_link.startswith('https://')):
+            try:
+                import cloudinary.utils
+                avatar, _ = cloudinary.utils.cloudinary_url(user.profile_link, type='authenticated', sign_url=True)
+            except Exception:
+                pass
+
+        return Response({
+            'success': True,
+            'token': str(refresh.access_token),
+            'refresh': str(refresh),
+            'user': {
+                'id': str(user.id),
+                'username': user.username,
+                'name': f"{user.first_name} {user.last_name}".strip() or user.username,
+                'email': user.email,
+                'role': role,
+                'barangay': barangay,
+                'avatar': avatar,
+            }
+        }, status=status.HTTP_200_OK)
+
+
+class AdminActiveBarangaysView(APIView):
+    """
+    Returns the canonical list of active LGU barangays as well as
+    all distinct barangays found among registered users (Homeowners and Kasambahays).
+    """
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        raw_active_names = list(
+            tbl_user_profile.objects.filter(
+                account_type='Barangay',
+                is_active=True,
+            )
+            .exclude(barangay__isnull=True)
+            .exclude(barangay='')
+            .values_list('barangay', flat=True)
+            .distinct()
+        )
+        active_normalized = sorted(set(b.strip().title() for b in raw_active_names if b and b.strip()))
+
+        # All distinct barangays found across all registered residents (Homeowners and Kasambahays)
+        raw_user_barangays = list(
+            tbl_user_profile.objects.filter(
+                account_type__in=['Homeowner', 'Kasambahay']
+            )
+            .exclude(barangay__isnull=True)
+            .exclude(barangay='')
+            .values_list('barangay', flat=True)
+            .distinct()
+        )
+        user_normalized = sorted(set(b.strip().title() for b in raw_user_barangays if b and b.strip() and b.strip().lower() != 'unassigned'))
+
+        # Also combine any active LGUs with user barangays
+        all_user_barangays = sorted(set(active_normalized + user_normalized))
+
+        return Response({
+            'barangays': active_normalized,
+            'active_lgus': active_normalized,
+            'user_barangays': all_user_barangays,
         }, status=status.HTTP_200_OK)
 
 

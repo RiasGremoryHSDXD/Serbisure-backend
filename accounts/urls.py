@@ -17,6 +17,10 @@ from .views import (
     ExportUserDataView,
     AdminUserListView,
     AdminDashboardStatsView,
+    AdminDashboardActivityView,
+    AdminMonthlyTrendView,
+    AdminLoginView,
+    AdminActiveBarangaysView,
 )
 
 urlpatterns = [
@@ -66,6 +70,10 @@ urlpatterns = [
     path('token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
 
     # Admin Endpoints
+    path('admin/login/', AdminLoginView.as_view(), name='admin-login'),
+    path('admin/active-barangays/', AdminActiveBarangaysView.as_view(), name='admin-active-barangays'),
     path('admin/users/', AdminUserListView.as_view(), name='admin-users'),
     path('admin/dashboard-stats/', AdminDashboardStatsView.as_view(), name='admin-dashboard-stats'),
+    path('admin/dashboard-activity/', AdminDashboardActivityView.as_view(), name='admin-dashboard-activity'),
+    path('admin/monthly-trend/', AdminMonthlyTrendView.as_view(), name='admin-monthly-trend'),
 ]

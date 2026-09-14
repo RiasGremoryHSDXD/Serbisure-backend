@@ -182,13 +182,17 @@ class AdminVerificationQueueView(generics.ListAPIView):
     Returns all verification requests for the Web Admin dashboard.
     Supports query params:
     - ?role=KASAMBAHAY | HOMEOWNER
-    - ?status=PENDING | VERIFIED | REJECTED
-    - ?barangay=Pagatpat
+    - ?status=PENDING | VERIFIED | REJECTED | NO_DOCUMENTS | ALL
+    - ?barangay=Pagatpat | UNASSIGNED | ALL
     """
     permission_classes = [AllowAny] # Permissive for easy admin dashboard integration
     serializer_class = AdminVerificationQueueSerializer
 
     def get_queryset(self):
+        doc_status = self.request.query_params.get('status')
+        if doc_status and doc_status.upper() in ['NO_DOCUMENTS', 'UNSUBMITTED']:
+            return tbl_documents.objects.none()
+
         # 1. National ID: Exclude national_id_back if the user already has a national_id_front,
         # ensuring National ID is represented as a single combined entry.
         front_user_ids = tbl_documents.objects.filter(
@@ -213,7 +217,6 @@ class AdminVerificationQueueView(generics.ListAPIView):
         if role and role.upper() != 'ALL':
             qs = qs.filter(user_profile__account_type__iexact=role)
             
-        doc_status = self.request.query_params.get('status')
         if doc_status and doc_status.upper() != 'ALL':
             if doc_status.upper() in ['PENDING', 'PENDING / REVIEW']:
                 qs = qs.filter(verification_status__in=['Pending', 'Unverified'])
@@ -223,14 +226,150 @@ class AdminVerificationQueueView(generics.ListAPIView):
                 qs = qs.filter(verification_status='Rejected')
 
         barangay = self.request.query_params.get('barangay')
-        if barangay and barangay.lower() not in ['all', 'all barangays']:
-            from django.db.models import Q
-            qs = qs.filter(
-                Q(user_profile__city__icontains=barangay) |
-                Q(user_profile__street__icontains=barangay)
-            )
+        if self.request.user.is_authenticated and getattr(self.request.user, 'account_type', None) == 'Barangay':
+            barangay = self.request.user.barangay
+
+        from django.db.models import Q
+        if barangay:
+            if barangay.upper() in ['UNASSIGNED', 'NO LGU COVERAGE', 'NO_LGU']:
+                from accounts.models import tbl_user_profile
+                active_lgus = [
+                    b.strip() for b in tbl_user_profile.objects.filter(
+                        account_type='Barangay', is_active=True
+                    ).exclude(barangay__isnull=True).exclude(barangay__exact='')
+                    .values_list('barangay', flat=True) if b and b.strip()
+                ]
+                q_assigned = Q()
+                for b in active_lgus:
+                    q_assigned |= Q(user_profile__barangay__iexact=b)
+                qs = qs.exclude(q_assigned)
+            elif barangay.lower() not in ['all', 'all barangays']:
+                qs = qs.filter(
+                    Q(user_profile__barangay__iexact=barangay) |
+                    Q(user_profile__barangay__icontains=barangay) |
+                    Q(user_profile__city__icontains=barangay) |
+                    Q(user_profile__street__icontains=barangay)
+                )
 
         return qs
+
+    def list(self, request, *args, **kwargs):
+        from accounts.models import tbl_user_profile
+        from django.db.models import Q
+        import cloudinary.utils
+
+        doc_status = request.query_params.get('status')
+        role_param = request.query_params.get('role')
+        barangay_param = request.query_params.get('barangay')
+
+        if request.user.is_authenticated and getattr(request.user, 'account_type', None) == 'Barangay':
+            barangay_param = request.user.barangay
+
+        # Dynamic active LGU barangay set
+        active_lgus = [
+            b.strip() for b in tbl_user_profile.objects.filter(
+                account_type='Barangay', is_active=True
+            ).exclude(barangay__isnull=True).exclude(barangay__exact='')
+            .values_list('barangay', flat=True) if b and b.strip()
+        ]
+        active_lgus_lower = [b.lower() for b in active_lgus]
+
+        # 1. Fetch document entries unless specifically requesting only unsubmitted
+        doc_data = []
+        if not (doc_status and doc_status.upper() in ['NO_DOCUMENTS', 'UNSUBMITTED']):
+            queryset = self.filter_queryset(self.get_queryset())
+            serializer = self.get_serializer(queryset, many=True)
+            doc_data = serializer.data
+
+        # 2. Fetch unsubmitted users if status is NO_DOCUMENTS, UNSUBMITTED, ALL, or not specified
+        unsubmitted_data = []
+        if not doc_status or doc_status.upper() in ['ALL', 'NO_DOCUMENTS', 'UNSUBMITTED']:
+            users_with_docs = tbl_documents.objects.values_list('user_profile_id', flat=True).distinct()
+            unsub_qs = tbl_user_profile.objects.filter(
+                account_type__in=['Homeowner', 'Kasambahay']
+            ).exclude(id__in=users_with_docs).order_by('-date_joined')
+
+            if role_param and role_param.upper() != 'ALL':
+                unsub_qs = unsub_qs.filter(account_type__iexact=role_param)
+
+            if barangay_param:
+                if barangay_param.upper() in ['UNASSIGNED', 'NO LGU COVERAGE', 'NO_LGU']:
+                    q_assigned = Q()
+                    for b in active_lgus:
+                        q_assigned |= Q(barangay__iexact=b)
+                    unsub_qs = unsub_qs.exclude(q_assigned)
+                elif barangay_param.lower() not in ['all', 'all barangays']:
+                    unsub_qs = unsub_qs.filter(
+                        Q(barangay__iexact=barangay_param) |
+                        Q(barangay__icontains=barangay_param) |
+                        Q(city__icontains=barangay_param) |
+                        Q(street__icontains=barangay_param)
+                    )
+
+            for u in unsub_qs:
+                full_name = f"{u.first_name} {u.last_name}".strip() or u.username
+                role_norm = u.account_type.upper() if u.account_type else 'HOMEOWNER'
+                if role_norm not in ['HOMEOWNER', 'KASAMBAHAY']:
+                    role_norm = 'HOMEOWNER'
+
+                avatar = u.profile_link or f"https://ui-avatars.com/api/?name={u.first_name}+{u.last_name}&background=F5A623&color=fff"
+                if u.profile_link and not (u.profile_link.startswith('http://') or u.profile_link.startswith('https://')):
+                    try:
+                        temp_url, _ = cloudinary.utils.cloudinary_url(
+                            u.profile_link,
+                            type="authenticated",
+                            sign_url=True,
+                        )
+                        avatar = temp_url
+                    except Exception:
+                        pass
+
+                brgy = (u.barangay or '').strip()
+                if not brgy:
+                    street_lower = (u.street or '').lower()
+                    city_lower = (u.city or '').lower()
+                    for b in active_lgus:
+                        if b.lower() in street_lower or b.lower() in city_lower:
+                            brgy = b
+                            break
+                if not brgy:
+                    brgy = 'Unassigned'
+
+                has_lgu = bool(brgy and brgy.lower() in active_lgus_lower)
+                req_label = "Statutory Clearances (NBI + Police)" if role_norm == 'KASAMBAHAY' else "National ID (Front + Back)"
+
+                unsubmitted_data.append({
+                    "id": f"unsubmitted_{u.id}",
+                    "userId": str(u.id),
+                    "name": full_name,
+                    "role": role_norm,
+                    "avatar": avatar,
+                    "documentType": "No Documents Submitted",
+                    "rawDocumentType": "unsubmitted",
+                    "documentNumber": "Not Available",
+                    "submittedDate": "Not Submitted",
+                    "issuedDate": "N/A",
+                    "validityDate": "N/A",
+                    "status": "NO_DOCUMENTS",
+                    "primaryStatus": "NO_DOCUMENTS",
+                    "recordStatus": "Under Review",
+                    "documentImage": "",
+                    "documentImageBack": "",
+                    "barangay": brgy,
+                    "city": u.city or "Cagayan de Oro City",
+                    "address": f"{u.street or ''}, {u.city or 'Cagayan de Oro City'}".strip(', '),
+                    "contactNumber": u.contact_number or "+639123456789",
+                    "email": u.email,
+                    "notes": f"Pending initial upload of {req_label}",
+                    "hasDocuments": False,
+                    "hasLguCoverage": has_lgu,
+                    "joinedDate": u.date_joined.strftime('%b %d, %Y') if u.date_joined else "Recent"
+                })
+
+        if doc_status and doc_status.upper() in ['NO_DOCUMENTS', 'UNSUBMITTED']:
+            return Response(unsubmitted_data, status=status.HTTP_200_OK)
+
+        return Response(doc_data + unsubmitted_data, status=status.HTTP_200_OK)
 
 
 class AdminVerificationReviewView(generics.GenericAPIView):

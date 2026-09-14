@@ -20,6 +20,9 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
     contact_number = serializers.CharField(max_length=25, required=True)
     user_about = serializers.CharField(max_length=500, required=False, allow_blank=True)
     user_tags = serializers.ListField(child=serializers.CharField(max_length=25), required=False)
+    region = serializers.CharField(max_length=100, required=False, allow_blank=True)
+    barangay = serializers.CharField(max_length=100, required=False, allow_blank=True)
+    street = serializers.CharField(max_length=100, required=False, allow_blank=True)
 
     class Meta: 
         model = tbl_user_profile
@@ -33,9 +36,11 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
             'date_of_birth',
             'religion',
             'nationality',
-            'street',
-            'city',
+            'region',
             'province',
+            'city',
+            'barangay',
+            'street',
             'zipcode',
             'country',
             'gender',
@@ -165,6 +170,47 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
 
         return normalized
     
+    def validate_region(self, value):
+        if not value:
+            return value
+        value = value.strip()
+        if not value:
+            return ""
+        if len(value) < 2 or len(value) > 100:
+            raise serializers.ValidationError("Region must be between 2 and 100 characters.")
+        if not re.match(r"^[\w\s\-().,']+$", value, re.UNICODE):
+            raise serializers.ValidationError("Region contains invalid characters.")
+        return value.title()
+
+    def validate_barangay(self, value):
+        if not value:
+            return value
+        value = value.strip()
+        if not value:
+            return ""
+        if len(value) < 2 or len(value) > 100:
+            raise serializers.ValidationError("Barangay must be between 2 and 100 characters.")
+        if not re.match(r"^[\w\s\-().,']+$", value, re.UNICODE):
+            raise serializers.ValidationError("Barangay contains invalid characters.")
+        return value.title()
+
+    def validate_street(self, value):
+        if not value:
+            return value
+        value = value.strip()
+        if not value:
+            return ""
+        blocked_patterns = [r'\bbrgy\b', r'\bbarangay\b', r'\bbgy\b']
+        for pattern in blocked_patterns:
+            if re.search(pattern, value, re.IGNORECASE):
+                raise serializers.ValidationError(
+                    "Please use the 'Barangay' field for your barangay. "
+                    "The Street field should only contain your House/Lot/Block number and street name."
+                )
+        if len(value) > 100:
+            raise serializers.ValidationError("Street address cannot exceed 100 characters.")
+        return value
+
     @classmethod
     def get_token(cls, user):
         token = super().get_token(user)
@@ -179,6 +225,13 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
         token['contact_number'] = user.contact_number
         token['show_contact_number'] = getattr(user, 'show_contact_number', True)
         token['user_tags'] = user.user_tags or []
+        token['region'] = user.region or ''
+        token['province'] = user.province or ''
+        token['city'] = user.city or ''
+        token['barangay'] = user.barangay or ''
+        token['street'] = user.street or ''
+        token['zipcode'] = user.zipcode or ''
+        token['country'] = user.country or 'Philippines'
 
         public_id = user.profile_link
 
@@ -223,9 +276,11 @@ class CustomLoginSerializer(TokenObtainPairSerializer):
         token['social_links'] = getattr(user, 'social_links', []) or []
         token['show_social_links'] = getattr(user, 'show_social_links', True)
         token['user_tags'] = user.user_tags or []
-        token['street'] = user.street or ''
-        token['city'] = user.city or ''
+        token['region'] = user.region or ''
         token['province'] = user.province or ''
+        token['city'] = user.city or ''
+        token['barangay'] = user.barangay or ''
+        token['street'] = user.street or ''
         token['zipcode'] = user.zipcode or ''
         token['country'] = user.country or 'Philippines'
 
@@ -615,9 +670,13 @@ class PublicProfileSerializer(serializers.ModelSerializer):
             'resume_url',
             'user_about',
             'user_tags',
-            'city',
+            'region',
             'province',
+            'city',
+            'barangay',
             'street',
+            'zipcode',
+            'country',
             'date_joined',
             'social_links',
             'show_social_links',

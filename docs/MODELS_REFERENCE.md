@@ -24,9 +24,11 @@ This document outlines the database schema, models, field types, and choices (en
 | `date_of_birth` | `DateField` | Null=True, Blank=True |
 | `religion` | `CharField` | Null=True, Blank=True |
 | `nationality` | `CharField` | Null=True, Blank=True |
-| `street` | `CharField` | Null=True, Blank=True |
-| `city` | `CharField` | Null=True, Blank=True |
+| `region` | `CharField` | Null=True, Blank=True |
 | `province` | `CharField` | Null=True, Blank=True |
+| `city` | `CharField` | Null=True, Blank=True |
+| `barangay` | `CharField` | Null=True, Blank=True |
+| `street` | `CharField` | Null=True, Blank=True |
 | `zipcode` | `CharField` | Null=True, Blank=True |
 | `country` | `CharField` | Null=True, Blank=True |
 | `gender` | `CharField` | Null=True, Blank=True, Choices: ['Male', 'Female', 'Other'] |
