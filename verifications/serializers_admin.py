@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import tbl_documents
+from .models import tbl_documents, tbl_audit_logs
 from accounts.models import tbl_user_profile
 import cloudinary.utils
 
@@ -96,3 +96,36 @@ class UserDocumentStatusSerializer(serializers.ModelSerializer):
             sign_url=True,
         )
         return url
+
+
+class AdminAuditLogSerializer(serializers.ModelSerializer):
+    """
+    Serializer for audit logs viewed by Superadmin.
+    """
+    class Meta:
+        model = tbl_audit_logs
+        fields = [
+            'log_id',
+            'actor',
+            'actor_name',
+            'actor_email',
+            'actor_role',
+            'actor_barangay',
+            'target_user',
+            'target_name',
+            'target_email',
+            'target_role',
+            'target_barangay',
+            'document',
+            'document_id_snapshot',
+            'document_type',
+            'document_number',
+            'action',
+            'previous_status',
+            'new_status',
+            'reason',
+            'ip_address',
+            'user_agent',
+            'metadata',
+            'created_at',
+        ]

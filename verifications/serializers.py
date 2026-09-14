@@ -278,11 +278,13 @@ class AdminVerificationQueueSerializer(serializers.ModelSerializer):
         companion = self._get_companion_doc(obj)
         if companion and obj.document_type in ['nbi_clearance', 'police_clearance']:
             return 'Clearances (NBI + Police)'
+        if companion and obj.document_type in ['national_id_front', 'national_id_back']:
+            return 'National ID (Front & Back)'
         mapping = {
             'nbi_clearance': 'NBI CLEARANCE',
             'police_clearance': 'Police Clearance',
-            'national_id_front': 'National ID',
-            'national_id_back': 'National ID',
+            'national_id_front': 'National ID (Front)',
+            'national_id_back': 'National ID (Back)',
         }
         return mapping.get(obj.document_type, obj.document_type.replace('_', ' ').title())
 

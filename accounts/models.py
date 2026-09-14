@@ -303,10 +303,8 @@ class tbl_user_profile(AbstractUser):
         }
 
         if self.account_type == 'Homeowner':
-            # National ID front & back are merged into a single entry (national_id_front or national_id)
-            if 'national_id_front' in verified_types or 'national_id' in verified_types:
-                return 'Verified'
-            if {'national_id_front', 'national_id_back'}.issubset(verified_types):
+            # Homeowner requires both front and back of the National ID (or legacy single 'national_id')
+            if {'national_id_front', 'national_id_back'}.issubset(verified_types) or 'national_id' in verified_types:
                 return 'Verified'
         elif self.account_type == 'Kasambahay':
             required = {'nbi_clearance', 'police_clearance'}
@@ -396,6 +394,8 @@ class tbl_user_profile(AbstractUser):
         return self.username
     
     class Meta: 
+        verbose_name = "User"
+        verbose_name_plural = "Users"
         constraints = [
             # Lock down the account_type column in the database
 

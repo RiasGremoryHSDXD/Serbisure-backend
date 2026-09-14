@@ -114,10 +114,15 @@ Creates a new job posting or service booking. Both Kasambahays and Homeowners ca
 ```json
 {
     "booking_type": "short_term",
-    "service_category": "Cleaning",
+    "service_category": ["Cleaning"],
     "start_time": "2026-12-01T09:00:00Z",
     "end_time": "2026-12-01T14:00:00Z",
-    "service_address": "123 Main Street, Manila",
+    "region": "Region X - Northern Mindanao",
+    "province": "Misamis Oriental",
+    "city": "Cagayan de Oro",
+    "barangay": "Macasandig",
+    "street": "123 Main Street",
+    "zip_code": "9000",
     "special_instruction": "Please bring your own vacuum cleaner."
 }
 ```

@@ -27,6 +27,12 @@ def get_signed_avatar(user):
 
 class BookingSerializer(serializers.ModelSerializer):
     zip_code = serializers.CharField(max_length=4, required=False, default='9000', allow_blank=True)
+    region = serializers.CharField(max_length=100, required=False, allow_blank=True, allow_null=True)
+    province = serializers.CharField(max_length=100, required=False, allow_blank=True, allow_null=True)
+    city = serializers.CharField(max_length=100, required=False, allow_blank=True, allow_null=True)
+    barangay = serializers.CharField(max_length=100, required=False, allow_blank=True, allow_null=True)
+    street = serializers.CharField(max_length=255, required=False, allow_blank=True, allow_null=True)
+    full_address = serializers.ReadOnlyField()
 
     class Meta:
         model = tbl_booking
@@ -37,7 +43,12 @@ class BookingSerializer(serializers.ModelSerializer):
             'service_category',
             'start_time',
             'end_time',
-            'service_address',
+            'region',
+            'province',
+            'city',
+            'barangay',
+            'street',
+            'full_address',
             'floor_number',
             'zip_code',
             'special_instruction',
@@ -48,6 +59,17 @@ class BookingSerializer(serializers.ModelSerializer):
         read_only_fields = ['booking_id', 'booking_status', 'poster_id', 'createdAt']
 
     def validate(self, data):
+        # Gracefully handle and discard deprecated service_address if passed
+        data.pop('service_address', None)
+
+        # Auto-normalize service_category: if all 5 base services are selected or All-around is combined, normalize to ['All-around']
+        service_category = data.get('service_category')
+        if isinstance(service_category, list):
+            base_services = {'Cleaning', 'Child_care', 'Cooking', 'Caregiver', 'Laundry'}
+            current_set = set(service_category)
+            if base_services.issubset(current_set) or ('All-around' in current_set and len(current_set) > 1):
+                data['service_category'] = ['All-around']
+
         now = timezone.now()
         start_time = data.get('start_time')
         end_time = data.get('end_time')
@@ -64,10 +86,14 @@ class BookingSerializer(serializers.ModelSerializer):
         # Batas Kasambahay (RA 10361) statutory minimum wage enforcement for long-term services
         booking_type = data.get('booking_type') or (self.instance.booking_type if self.instance else None)
         daily_rate = data.get('daily_rate') if 'daily_rate' in data else (self.instance.daily_rate if self.instance else None)
-        service_address = data.get('service_address') or (self.instance.service_address if self.instance else '')
+        
+        street = data.get('street') or (self.instance.street if self.instance else '')
+        barangay = data.get('barangay') or (self.instance.barangay if self.instance else '')
+        city = data.get('city') or (self.instance.city if self.instance else '')
+        province = data.get('province') or (self.instance.province if self.instance else '')
         zip_code = data.get('zip_code') or (self.instance.zip_code if self.instance else '9000')
         data['zip_code'] = zip_code
-        full_address = f"{service_address} {zip_code}"
+        full_address = f"{street} {barangay} {city} {province} {zip_code}".strip()
 
         if daily_rate is not None:
             if not isinstance(daily_rate, Decimal):
@@ -110,6 +136,7 @@ class BookingFeedSerializer(serializers.ModelSerializer):
     profile_link = serializers.SerializerMethodField()
     name = serializers.SerializerMethodField()
     poster_account_type = serializers.SerializerMethodField()
+    full_address = serializers.ReadOnlyField()
 
     class Meta:
         model = tbl_booking
@@ -121,7 +148,14 @@ class BookingFeedSerializer(serializers.ModelSerializer):
             'booking_status',
             'profile_link',
             'name',
-            'service_address',
+            'region',
+            'province',
+            'city',
+            'barangay',
+            'street',
+            'full_address',
+            'floor_number',
+            'zip_code',
             'service_category',
             'daily_rate',
             'special_instruction',
@@ -149,6 +183,7 @@ class BookingDetailSerializer(serializers.ModelSerializer):
     assigned_partner = serializers.SerializerMethodField()
     has_reviewed = serializers.SerializerMethodField()
     proposals_count = serializers.SerializerMethodField()
+    full_address = serializers.ReadOnlyField()
 
     class Meta:
         model = tbl_booking
@@ -159,7 +194,12 @@ class BookingDetailSerializer(serializers.ModelSerializer):
             'service_category',
             'start_time',
             'end_time',
-            'service_address',
+            'region',
+            'province',
+            'city',
+            'barangay',
+            'street',
+            'full_address',
             'floor_number',
             'zip_code',
             'special_instruction',

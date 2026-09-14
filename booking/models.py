@@ -80,10 +80,37 @@ class tbl_booking(models.Model):
         null=True
     )
 
-    service_address = models.CharField(
+    region = models.CharField(
+        max_length=100,
+        blank=True,
+        null=True,
+        help_text="Philippine region (e.g. Region X - Northern Mindanao)"
+    )
+
+    province = models.CharField(
+        max_length=100,
+        blank=True,
+        null=True
+    )
+
+    city = models.CharField(
+        max_length=100,
+        blank=True,
+        null=True
+    )
+
+    barangay = models.CharField(
+        max_length=100,
+        blank=True,
+        null=True,
+        help_text="Barangay name within city/municipality"
+    )
+
+    street = models.CharField(
         max_length=255,
-        blank=False,
-        null=False
+        blank=True,
+        null=True,
+        help_text="House No. / Street / Zone / Subdivision"
     )
 
     floor_number = models.CharField(
@@ -94,6 +121,9 @@ class tbl_booking(models.Model):
 
     zip_code = models.CharField(
         max_length=4,
+        blank=True,
+        null=True,
+        default='9000',
         validators=[
             RegexValidator(
                 r'^(0[4-9]\d{2}|[1-9]\d{3})$', 
@@ -121,6 +151,11 @@ class tbl_booking(models.Model):
     createdAt = models.DateTimeField(
         auto_now_add=True
     )
+
+    @property
+    def full_address(self):
+        parts = [p for p in [self.street, self.barangay, self.city, self.province] if p]
+        return ", ".join(parts) if parts else ""
 
     def __str__(self):
         return f"{self.service_category} - {self.booking_status}"

@@ -73,7 +73,11 @@ class ReviewTests(APITestCase):
             service_category=['Cleaning'],
             start_time=timezone.now() - datetime.timedelta(days=2),
             end_time=timezone.now() - datetime.timedelta(days=1),
-            service_address='123 Main St, CDO',
+            street='123 Main St',
+            barangay='Macasandig',
+            city='Cagayan de Oro',
+            province='Misamis Oriental',
+            region='Region X - Northern Mindanao',
             zip_code='9000',
             daily_rate=Decimal('500.00')
         )
@@ -92,7 +96,11 @@ class ReviewTests(APITestCase):
             service_category=['Cleaning'],
             start_time=timezone.now() + datetime.timedelta(days=1),
             end_time=timezone.now() + datetime.timedelta(days=2),
-            service_address='123 Main St, CDO',
+            street='123 Main St',
+            barangay='Macasandig',
+            city='Cagayan de Oro',
+            province='Misamis Oriental',
+            region='Region X - Northern Mindanao',
             zip_code='9000',
             daily_rate=Decimal('500.00')
         )

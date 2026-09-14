@@ -154,3 +154,91 @@ class tbl_documents(models.Model):
             )
         ]
 
+
+class tbl_audit_logs(models.Model):
+    """
+    Immutable audit log table tracking document verification lifecycle:
+    approvals, rejections, resets, uploads, deletions, and OCR reprocessing.
+    Preserves historical identity even if users or documents are deleted.
+    """
+    ACTION_CHOICES = (
+        ('APPROVED', 'Approved'),
+        ('REJECTED', 'Rejected'),
+        ('RESET', 'Reset to Pending'),
+        ('DELETED', 'Deleted'),
+        ('UPLOADED', 'Uploaded'),
+        ('REPROCESSED', 'Reprocessed'),
+        ('UPDATED', 'Updated'),
+    )
+
+    log_id = models.UUIDField(
+        primary_key=True,
+        default=uuid.uuid4,
+        editable=False
+    )
+
+    # Actor (Officer, Admin, or System who performed the action)
+    actor = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="audit_actions_performed"
+    )
+    actor_name = models.CharField(max_length=255, blank=True, null=True)
+    actor_email = models.CharField(max_length=255, blank=True, null=True)
+    actor_role = models.CharField(max_length=50, blank=True, null=True)
+    actor_barangay = models.CharField(max_length=100, blank=True, null=True)
+
+    # Target resident (Homeowner / Kasambahay applicant)
+    target_user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="audit_actions_received"
+    )
+    target_name = models.CharField(max_length=255, blank=True, null=True)
+    target_email = models.CharField(max_length=255, blank=True, null=True)
+    target_role = models.CharField(max_length=50, blank=True, null=True)
+    target_barangay = models.CharField(max_length=100, blank=True, null=True)
+
+    # Document details (with snapshot UUID in case row is deleted)
+    document = models.ForeignKey(
+        'tbl_documents',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="audit_logs"
+    )
+    document_id_snapshot = models.UUIDField(null=True, blank=True, help_text="Preserved document UUID")
+    document_type = models.CharField(max_length=100, blank=True, null=True)
+    document_number = models.CharField(max_length=100, blank=True, null=True)
+
+    # Action & status transitions
+    action = models.CharField(max_length=50, choices=ACTION_CHOICES)
+    previous_status = models.CharField(max_length=50, blank=True, null=True)
+    new_status = models.CharField(max_length=50, blank=True, null=True)
+    reason = models.TextField(blank=True, null=True, help_text="Rejection reason or action remarks")
+
+    # Security & network telemetry
+    ip_address = models.GenericIPAddressField(blank=True, null=True)
+    user_agent = models.CharField(max_length=500, blank=True, null=True)
+    metadata = models.JSONField(default=dict, blank=True, null=True)
+
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        db_table = 'tbl_audit_logs'
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['-created_at']),
+            models.Index(fields=['action']),
+            models.Index(fields=['actor_role']),
+            models.Index(fields=['target_barangay']),
+        ]
+
+    def __str__(self):
+        return f"[{self.created_at:%Y-%m-%d %H:%M}] {self.actor_name or 'System'} {self.action} for {self.target_name or 'Resident'} ({self.document_type})"
+
+

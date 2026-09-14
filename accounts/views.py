@@ -422,17 +422,19 @@ class AdminDashboardActivityView(APIView):
         # Optional barangay scope
         if barangay_param and barangay_param.upper() not in ['ALL', 'ALL BARANGAYS']:
             bookings_qs = bookings_qs.filter(
+                Q(barangay__iexact=barangay_param) |
+                Q(barangay__icontains=barangay_param) |
                 Q(poster_id__barangay__iexact=barangay_param) |
                 Q(poster_id__barangay__icontains=barangay_param) |
                 Q(poster_id__city__icontains=barangay_param) |
-                Q(poster_id__street__icontains=barangay_param) |
-                Q(service_address__icontains=barangay_param)
+                Q(poster_id__street__icontains=barangay_param)
             )
 
         result = []
-        for booking in bookings_qs[:15]:
+        for booking in bookings_qs[:100]:
             poster = booking.poster_id
             poster_name = f"{poster.first_name} {poster.last_name}".strip() or poster.username
+            poster_role = (getattr(poster, 'account_type', '') or '').strip()
 
             # Build avatar URL for poster
             poster_avatar = poster.profile_link or f"https://ui-avatars.com/api/?name={poster.first_name}+{poster.last_name}&background=F5A623&color=fff"
@@ -445,22 +447,39 @@ class AdminDashboardActivityView(APIView):
                 except Exception:
                     pass
 
-            # Try to find assigned worker (Kasambahay)
+            # Try to find assigned counterpart
             assignment = tbl_booking_assignment.objects.filter(booking_id=booking).select_related('accepter_id').first()
-            worker_name = 'Unassigned'
-            worker_avatar = 'https://ui-avatars.com/api/?name=?&background=E2E8F0&color=94A3B8'
-            if assignment:
+            accepter_name = None
+            accepter_avatar = None
+            if assignment and assignment.accepter_id:
                 w = assignment.accepter_id
-                worker_name = f"{w.first_name} {w.last_name}".strip() or w.username
-                worker_avatar = w.profile_link or f"https://ui-avatars.com/api/?name={w.first_name}+{w.last_name}&background=0D0D11&color=fff"
+                accepter_name = f"{w.first_name} {w.last_name}".strip() or w.username
+                accepter_avatar = w.profile_link or f"https://ui-avatars.com/api/?name={w.first_name}+{w.last_name}&background=0D0D11&color=fff"
                 if w.profile_link and not (w.profile_link.startswith('http://') or w.profile_link.startswith('https://')):
                     try:
                         temp_url, _ = cloudinary.utils.cloudinary_url(
                             w.profile_link, type='authenticated', sign_url=True
                         )
-                        worker_avatar = temp_url
+                        accepter_avatar = temp_url
                     except Exception:
                         pass
+
+            unassigned_avatar = 'https://ui-avatars.com/api/?name=?&background=E2E8F0&color=94A3B8'
+
+            # Role-aware assignment:
+            # If poster is Kasambahay (offering services / looking for job), Kasambahay is the worker.
+            # The Employer is the counterpart who hired/accepted them (or 'Unassigned').
+            if poster_role.lower() == 'kasambahay':
+                worker_name = poster_name
+                worker_avatar = poster_avatar
+                homeowner_name = accepter_name or 'Unassigned'
+                homeowner_avatar = accepter_avatar or unassigned_avatar
+            else:
+                # Homeowner posted the job request, Kasambahay is the counterpart (or 'Unassigned')
+                homeowner_name = poster_name
+                homeowner_avatar = poster_avatar
+                worker_name = accepter_name or 'Unassigned'
+                worker_avatar = accepter_avatar or unassigned_avatar
 
             # RA 10361 compliance checks
             # Minimum wage baseline: ₱5,000/mo for CDO Kasambahay
@@ -489,10 +508,10 @@ class AdminDashboardActivityView(APIView):
             contract_type = 'Formal Kasambahay (Long-Term)' if booking.booking_type == 'long_term' else 'Short-Term On-Demand'
 
             # Barangay
-            brgy = poster.barangay or ''
+            brgy = booking.barangay or poster.barangay or ''
             if not brgy:
                 for b_name in ['Pagatpat', 'Canitoan']:
-                    if b_name.lower() in (poster.street or '').lower() or b_name.lower() in (poster.city or '').lower():
+                    if b_name.lower() in (poster.street or '').lower() or b_name.lower() in (poster.city or '').lower() or b_name.lower() in (booking.street or '').lower() or b_name.lower() in (booking.full_address or '').lower():
                         brgy = b_name
                         break
             if not brgy:
@@ -500,8 +519,8 @@ class AdminDashboardActivityView(APIView):
 
             result.append({
                 'id': str(booking.booking_id),
-                'homeownerName': poster_name,
-                'homeownerAvatar': poster_avatar,
+                'homeownerName': homeowner_name,
+                'homeownerAvatar': homeowner_avatar,
                 'workerName': worker_name,
                 'workerAvatar': worker_avatar,
                 'serviceCategory': ', '.join(booking.service_category),
@@ -1011,12 +1030,15 @@ class ExportUserDataView(APIView):
         from reviews.models import tbl_review
 
         posted_bookings = list(tbl_booking.objects.filter(poster_id=user).values(
-            'booking_id', 'booking_type', 'booking_status', 'service_category', 'daily_rate', 'service_address', 'createdAt'
+            'booking_id', 'booking_type', 'booking_status', 'service_category', 'daily_rate',
+            'street', 'barangay', 'city', 'province', 'region', 'zip_code', 'createdAt'
         ))
         for b in posted_bookings:
             b['booking_id'] = str(b['booking_id'])
             b['createdAt'] = str(b['createdAt'])
             b['daily_rate'] = str(b['daily_rate'])
+            addr_parts = [b.get(k) for k in ['street', 'barangay', 'city', 'province'] if b.get(k)]
+            b['full_address'] = ', '.join(addr_parts) if addr_parts else ''
 
         assigned_bookings = list(tbl_booking_assignment.objects.filter(accepter_id=user).values(
             'booking_assignment_id', 'booking_id', 'accepted_at'
