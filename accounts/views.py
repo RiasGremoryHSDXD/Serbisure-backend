@@ -19,6 +19,7 @@ from rest_framework_simplejwt.views import TokenObtainPairView
 from rest_framework.throttling import AnonRateThrottle, UserRateThrottle
 from rest_framework.exceptions import Throttled
 from django.core.cache import cache
+from django.db.models import Q
 from core.utils import check_valid_uuid
 import math
 from drf_spectacular.utils import extend_schema, OpenApiParameter
@@ -608,6 +609,85 @@ class AdminMonthlyTrendView(APIView):
         return Response({'trend': months}, status=status.HTTP_200_OK)
 
 
+class AdminVerificationStatusStatsView(APIView):
+    """
+    Returns the current count of accounts per verification status.
+    Covers Kasambahay and Homeowner accounts only (excludes Admin/Barangay).
+    Optionally filtered by barangay.
+
+    GET /api/v1/accounts/admin/verification-status-stats/?barangay=Pagatpat
+
+    Response:
+    {
+        "barangay": "Pagatpat",
+        "stats": {
+            "verified": 12,
+            "pending": 5,
+            "unverified": 8,
+            "rejected": 2
+        },
+        "total": 27
+    }
+    """
+    permission_classes = [AllowAny]
+
+    def get(self, request, *args, **kwargs):
+        import re
+        barangay_param = request.query_params.get('barangay', '').strip()
+
+        # Base queryset: only Kasambahay + Homeowner accounts
+        qs = tbl_user_profile.objects.filter(
+            account_type__in=['Kasambahay', 'Homeowner'],
+            is_active=True,
+        ).prefetch_related('documents')
+
+        # Optional barangay scope (idiot-proof filter against different naming conventions: "Brgy. Pagatpat", "Barangay Pagatpat", "Pagatpat")
+        if barangay_param and barangay_param.upper() not in ['ALL', 'ALL BARANGAYS']:
+            clean_bgy = re.sub(r'^(brgy\.?|barangay)\s+', '', barangay_param, flags=re.IGNORECASE).strip()
+            qs = qs.filter(
+                Q(barangay__icontains=clean_bgy) |
+                Q(barangay__icontains=barangay_param) |
+                Q(city__icontains=clean_bgy) |
+                Q(street__icontains=clean_bgy)
+            )
+
+        # Force prefetch evaluation safely into a list before accessing .verification_status property
+        users = list(qs)
+
+        verified = 0
+        pending = 0
+        unverified = 0
+        rejected = 0
+
+        for user in users:
+            try:
+                vs = user.verification_status
+            except Exception:
+                vs = 'Unverified'
+
+            if vs == 'Verified':
+                verified += 1
+            elif vs == 'Pending':
+                pending += 1
+            elif vs == 'Rejected':
+                rejected += 1
+            else:
+                unverified += 1
+
+        total = verified + pending + unverified + rejected
+
+        return Response({
+            'barangay': barangay_param or 'All Barangays',
+            'stats': {
+                'verified': verified,
+                'pending': pending,
+                'unverified': unverified,
+                'rejected': rejected,
+            },
+            'total': total,
+        }, status=status.HTTP_200_OK)
+
+
 class AdminLoginView(APIView):
     """
     Dedicated authentication endpoint for Web Admin Portal (Superadmin and Barangay LGU officers).
@@ -618,6 +698,7 @@ class AdminLoginView(APIView):
 
     def post(self, request):
         raw_identifier = (request.data.get('username') or request.data.get('email') or '').strip()
+
         password = (request.data.get('password') or '').strip()
 
         if not raw_identifier or not password:

@@ -13,6 +13,7 @@ from .serializers import (
     BookingProposalSerializer
 )
 from .models import tbl_booking, tbl_booking_assignment, tbl_booking_proposal
+from reviews.models import tbl_review
 from django.core.cache import cache
 from django.db.models import Q, Avg
 from decimal import Decimal, InvalidOperation
