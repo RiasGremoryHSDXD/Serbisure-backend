@@ -276,6 +276,9 @@ class AdminUserListView(generics.ListAPIView):
                 },
                 "ra10361Compliant": True,
             }
+            social_links_raw = getattr(u, 'social_links', []) or []
+            show_links = getattr(u, 'show_social_links', True)
+            user_item["socialLinks"] = social_links_raw if show_links else []
             data.append(user_item)
 
         return Response(data, status=status.HTTP_200_OK)
