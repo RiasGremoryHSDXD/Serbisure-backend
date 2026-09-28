@@ -627,7 +627,7 @@ class ChatThreadSerializerTests(TestCase):
         response = self.client.get(f'/api/v1/chat/thread/{self.bob.id}/')
         self.assertEqual(response.status_code, status.HTTP_200_OK)
 
-        messages = response.data.get('results', response.data) if isinstance(response.data, dict) else response.data
+        messages = response.data.get('data') or response.data.get('results', response.data) if isinstance(response.data, dict) else response.data
         self.assertTrue(len(messages) >= 1)
         first = messages[0]
         self.assertEqual(first['message_type'], 'text')
@@ -646,7 +646,7 @@ class ChatThreadSerializerTests(TestCase):
         response = self.client.get(f'/api/v1/chat/thread/{self.bob.id}/')
         self.assertEqual(response.status_code, status.HTTP_200_OK)
 
-        messages = response.data.get('results', response.data) if isinstance(response.data, dict) else response.data
+        messages = response.data.get('data') or response.data.get('results', response.data) if isinstance(response.data, dict) else response.data
         found = [m for m in messages if m['chat_message_id'] == str(msg.chat_message_id)]
         self.assertTrue(len(found) == 1)
         self.assertEqual(found[0]['message_type'], 'image')
@@ -676,7 +676,7 @@ class ChatThreadSerializerTests(TestCase):
         # Alice views thread
         response = self.client.get(f'/api/v1/chat/thread/{self.bob.id}/')
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        messages = response.data.get('results', response.data) if isinstance(response.data, dict) else response.data
+        messages = response.data.get('data') or response.data.get('results', response.data) if isinstance(response.data, dict) else response.data
         item = [m for m in messages if m['chat_message_id'] == str(msg.chat_message_id)][0]
 
         self.assertEqual(item['reaction_summary']['❤️'], 1)
@@ -686,7 +686,7 @@ class ChatThreadSerializerTests(TestCase):
         # Bob views thread
         self.client.force_authenticate(user=self.bob)
         response_bob = self.client.get(f'/api/v1/chat/thread/{self.alice.id}/')
-        messages_bob = response_bob.data.get('results', response_bob.data) if isinstance(response_bob.data, dict) else response_bob.data
+        messages_bob = response_bob.data.get('data') or response_bob.data.get('results', response_bob.data) if isinstance(response_bob.data, dict) else response_bob.data
         item_bob = [m for m in messages_bob if m['chat_message_id'] == str(msg.chat_message_id)][0]
 
         self.assertEqual(item_bob['my_reaction'], '👍')
