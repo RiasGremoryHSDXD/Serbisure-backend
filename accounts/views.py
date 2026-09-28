@@ -235,6 +235,12 @@ class AdminUserListView(generics.ListAPIView):
                         u.profile_link,
                         type="authenticated",
                         sign_url=True,
+                        format="webp",
+                        quality="auto",
+                        crop="fill",
+                        gravity="face",
+                        width=200,
+                        height=200,
                     )
                     avatar = temp_url
                 except Exception:
@@ -445,7 +451,15 @@ class AdminDashboardActivityView(APIView):
             if poster.profile_link and not (poster.profile_link.startswith('http://') or poster.profile_link.startswith('https://')):
                 try:
                     temp_url, _ = cloudinary.utils.cloudinary_url(
-                        poster.profile_link, type='authenticated', sign_url=True
+                        poster.profile_link,
+                        type='authenticated',
+                        sign_url=True,
+                        format="webp",
+                        quality="auto",
+                        crop="fill",
+                        gravity="face",
+                        width=200,
+                        height=200,
                     )
                     poster_avatar = temp_url
                 except Exception:
@@ -462,7 +476,15 @@ class AdminDashboardActivityView(APIView):
                 if w.profile_link and not (w.profile_link.startswith('http://') or w.profile_link.startswith('https://')):
                     try:
                         temp_url, _ = cloudinary.utils.cloudinary_url(
-                            w.profile_link, type='authenticated', sign_url=True
+                            w.profile_link,
+                            type='authenticated',
+                            sign_url=True,
+                            format="webp",
+                            quality="auto",
+                            crop="fill",
+                            gravity="face",
+                            width=200,
+                            height=200,
                         )
                         accepter_avatar = temp_url
                     except Exception:
@@ -740,7 +762,17 @@ class AdminLoginView(APIView):
         if user.profile_link and not (user.profile_link.startswith('http://') or user.profile_link.startswith('https://')):
             try:
                 import cloudinary.utils
-                avatar, _ = cloudinary.utils.cloudinary_url(user.profile_link, type='authenticated', sign_url=True)
+                avatar, _ = cloudinary.utils.cloudinary_url(
+                    user.profile_link,
+                    type='authenticated',
+                    sign_url=True,
+                    format="webp",
+                    quality="auto",
+                    crop="fill",
+                    gravity="face",
+                    width=200,
+                    height=200,
+                )
             except Exception:
                 pass
 
