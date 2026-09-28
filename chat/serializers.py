@@ -1,6 +1,7 @@
 from rest_framework import serializers
 from .models import tbl_chat_message, tbl_chat_reaction, ALLOWED_EMOJIS
 from django.contrib.auth import get_user_model
+from core.utils import get_signed_cloudinary_url
 import cloudinary.utils
 import time
 
@@ -212,18 +213,7 @@ class ChatMessageSerializer(serializers.ModelSerializer):
     def get_image_url(self, obj):
         if obj.message_type != 'image' or not obj.image_public_id:
             return None
-        try:
-            url, _ = cloudinary.utils.cloudinary_url(
-                obj.image_public_id,
-                type='authenticated',
-                sign_url=True,
-                format="webp",
-                quality="auto",
-                expires_at=int(time.time()) + 3600
-            )
-            return url
-        except Exception:
-            return None
+        return get_signed_cloudinary_url(obj.image_public_id, as_avatar=False)
 
     def get_reaction_summary(self, obj):
         counts = {e: 0 for e in ALLOWED_EMOJIS}
@@ -263,28 +253,7 @@ class ChatInboxSerializer(serializers.Serializer):
     sent_count = serializers.IntegerField(default=0)
 
     def get_partner_profile_image(self, obj):
-        public_id = obj.get('partner_profile_link')
-        if not public_id:
-            return None
-
-        if str(public_id).startswith('http://') or str(public_id).startswith('https://'):
-            return str(public_id)
-
-        try:
-            temporary_url, _ = cloudinary.utils.cloudinary_url(
-                public_id,
-                type="authenticated",
-                sign_url=True,
-                width=120,
-                height=120,
-                crop="fill",
-                gravity="face",
-                quality="auto",
-                fetch_format="auto"
-            )
-            return temporary_url
-        except Exception:
-            return None
+        return get_signed_cloudinary_url(obj.get('partner_profile_link'), as_avatar=True)
 
 
 class MarkMessageReadSerializer(serializers.ModelSerializer):

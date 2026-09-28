@@ -1,7 +1,7 @@
 from rest_framework import serializers
 from .models import tbl_review
 from booking.models import tbl_booking, tbl_booking_assignment
-import cloudinary.utils
+from core.utils import get_signed_cloudinary_url
 
 
 class CreateReviewSerializer(serializers.ModelSerializer):
@@ -106,17 +106,7 @@ class ReviewSerializer(serializers.ModelSerializer):
 
     def _get_signed_profile_link(self, user):
         public_id = getattr(user, 'profile_link', None)
-        if not public_id:
-            return None
-        try:
-            url, _ = cloudinary.utils.cloudinary_url(
-                public_id,
-                type="authenticated",
-                sign_url=True
-            )
-            return url
-        except Exception:
-            return None
+        return get_signed_cloudinary_url(public_id, as_avatar=True)
 
     def get_reviewer_name(self, obj):
         first = obj.reviewer_id.first_name or ''
