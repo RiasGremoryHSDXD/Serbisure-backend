@@ -217,6 +217,8 @@ class ChatMessageSerializer(serializers.ModelSerializer):
                 obj.image_public_id,
                 type='authenticated',
                 sign_url=True,
+                format="webp",
+                quality="auto",
                 expires_at=int(time.time()) + 3600
             )
             return url
