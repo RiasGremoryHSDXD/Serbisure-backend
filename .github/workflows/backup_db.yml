@@ -7,10 +7,12 @@ jobs:
   export-db:
     runs-on: ubuntu-latest
     steps:
-      - name: Install PostgreSQL Client
+      - name: Install PostgreSQL 18 Client
         run: |
           sudo apt-get update -y
-          sudo apt-get install -y postgresql-client
+          sudo apt-get install -y postgresql-common
+          sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
+          sudo apt-get install -y postgresql-client-18 || true
 
       - name: Export Database from Neon
         env:
@@ -24,8 +26,14 @@ jobs:
           # Strip -pooler for direct fast unpooled dump
           CLEAN_URL=$(echo "$DATABASE_URL" | sed 's/-pooler\./\./')
 
-          echo "Exporting all tables and data from Neon DB..."
-          pg_dump "$CLEAN_URL" --clean --if-exists --no-owner --no-privileges -f neon_dump.sql
+          echo "Exporting all tables and data from Neon DB (PostgreSQL 18)..."
+          if command -v pg_dump >/dev/null && [ "$(pg_dump --version | grep -oE '[0-9]+' | head -1)" -ge 18 ]; then
+            echo "Using native pg_dump $(pg_dump --version)..."
+            pg_dump "$CLEAN_URL" --clean --if-exists --no-owner --no-privileges -f neon_dump.sql
+          else
+            echo "Using Docker postgres:18-alpine for pg_dump..."
+            docker run --rm -u 0 -v "$PWD":/backup postgres:18-alpine pg_dump "$CLEAN_URL" --clean --if-exists --no-owner --no-privileges -f /backup/neon_dump.sql
+          fi
 
           echo "Dump completed successfully. File size:"
           ls -lh neon_dump.sql
