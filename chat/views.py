@@ -553,7 +553,7 @@ class ChatInboxView(generics.GenericAPIView):
                 'partner_id': partner.id,
                 'partner_name': f"{partner.first_name} {partner.last_name}".strip(),
                 'partner_account_type': partner.account_type,
-                'partner_profile_link': public_id,
+                'partner_profile_link': partner_profile_image,
                 'last_message': last_message_text,
                 'last_message_time': last_msg.createdAt,
                 'unread_count': unread_count,
