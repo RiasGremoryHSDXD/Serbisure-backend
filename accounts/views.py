@@ -200,10 +200,14 @@ class AdminUserListView(generics.ListAPIView):
         ]
         active_lgus_lower = [b.lower() for b in active_lgus]
 
-        users_qs = tbl_user_profile.objects.filter(account_type__in=['Homeowner', 'Kasambahay']).order_by('-date_joined')
-
-        if role_param and role_param.upper() != 'ALL':
-            users_qs = users_qs.filter(account_type__iexact=role_param)
+        if role_param and role_param.upper() in ['BARANGAY', 'ADMIN']:
+            users_qs = tbl_user_profile.objects.filter(account_type='Barangay').order_by('barangay')
+        elif role_param and role_param.upper() == 'SUPERADMIN':
+            users_qs = tbl_user_profile.objects.filter(account_type='Admin').order_by('-date_joined')
+        else:
+            users_qs = tbl_user_profile.objects.filter(account_type__in=['Homeowner', 'Kasambahay', 'Barangay', 'Admin']).order_by('-date_joined')
+            if role_param and role_param.upper() != 'ALL':
+                users_qs = users_qs.filter(account_type__iexact=role_param)
 
         from django.db.models import Q
         if barangay_param:
@@ -215,6 +219,7 @@ class AdminUserListView(generics.ListAPIView):
                 users_qs = users_qs.exclude(q_assigned)
             elif barangay_param.upper() not in ['ALL', 'ALL BARANGAYS']:
                 users_qs = users_qs.filter(
+                    Q(account_type='Admin') |
                     Q(barangay__iexact=barangay_param) |
                     Q(city__icontains=barangay_param) |
                     Q(street__icontains=barangay_param)
@@ -222,16 +227,24 @@ class AdminUserListView(generics.ListAPIView):
 
         data = []
         for u in users_qs:
-            full_name = f"{u.first_name} {u.last_name}".strip() or u.username
-            role_norm = u.account_type.upper() if u.account_type else 'HOMEOWNER'
-            if role_norm not in ['HOMEOWNER', 'KASAMBAHAY']:
+            if u.account_type == 'Barangay':
+                full_name = f"Brgy. {u.barangay} Officer" if u.barangay else (f"{u.first_name} {u.last_name}".strip() or u.username)
+                role_norm = 'BARANGAY'
+            elif u.account_type == 'Admin':
+                full_name = f"{u.first_name} {u.last_name}".strip() or "City Super Admin"
+                role_norm = 'SUPERADMIN'
+            elif u.account_type == 'Kasambahay':
+                full_name = f"{u.first_name} {u.last_name}".strip() or u.username
+                role_norm = 'KASAMBAHAY'
+            else:
+                full_name = f"{u.first_name} {u.last_name}".strip() or u.username
                 role_norm = 'HOMEOWNER'
 
             avatar = (
                 get_signed_cloudinary_url(u.profile_link, as_avatar=True)
                 or f"https://ui-avatars.com/api/?name={u.first_name}+{u.last_name}&background=F5A623&color=fff"
             )
-            is_verified = u.verification_status == 'Verified'
+            is_verified = (u.verification_status == 'Verified') or (u.account_type in ['Barangay', 'Admin'])
 
             brgy = (u.barangay or '').strip()
             if not brgy:
