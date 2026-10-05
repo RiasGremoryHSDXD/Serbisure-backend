@@ -471,17 +471,6 @@ class AdminVerificationReviewView(generics.GenericAPIView):
                         companion.verifyBy = reviewer
                     companion.save()
 
-            # Check if all user documents are verified
-            user_docs = tbl_documents.objects.filter(user_profile=user)
-            all_verified = user_docs.exists() and all(d.verification_status == 'Verified' for d in user_docs)
-            has_rejected = user_docs.exists() and any(d.verification_status == 'Rejected' for d in user_docs)
-            if all_verified:
-                user.verification_status = 'Verified'
-            elif has_rejected:
-                user.verification_status = 'Rejected'
-            else:
-                user.verification_status = 'Pending'
-            user.save(update_fields=['verification_status'])
 
             try:
                 from notifications.models import tbl_notification
@@ -523,8 +512,6 @@ class AdminVerificationReviewView(generics.GenericAPIView):
             # If NBI Clearance is rejected, Police Clearance must NOT be rejected.
             # Each document can be rejected independently.
 
-            user.verification_status = 'Rejected'
-            user.save(update_fields=['verification_status'])
 
             try:
                 from notifications.models import tbl_notification
@@ -563,14 +550,6 @@ class AdminVerificationReviewView(generics.GenericAPIView):
             # NOTE: DO NOT reset companion documents!
             # Resetting Front ID must NOT reset Back ID.
 
-            user_docs = tbl_documents.objects.filter(user_profile=user)
-            if any(d.verification_status == 'Rejected' for d in user_docs):
-                user.verification_status = 'Rejected'
-            elif user_docs.exists() and all(d.verification_status == 'Verified' for d in user_docs):
-                user.verification_status = 'Verified'
-            else:
-                user.verification_status = 'Pending'
-            user.save(update_fields=['verification_status'])
 
             return Response({
                 "message": "Document reset to Pending review.",

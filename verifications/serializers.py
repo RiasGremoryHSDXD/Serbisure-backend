@@ -118,11 +118,6 @@ class DocumentUploadSerializer(serializers.ModelSerializer):
         except Exception:
             pass
 
-        # Update user profile verification status to Pending
-        if getattr(user, 'verification_status', None) == 'Unverified':
-            user.verification_status = 'Pending'
-            user.save(update_fields=['verification_status'])
-
         return document
 
     def to_representation(self, instance):

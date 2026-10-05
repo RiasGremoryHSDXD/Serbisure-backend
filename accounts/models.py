@@ -382,12 +382,43 @@ class tbl_user_profile(AbstractUser):
             if normalized:
                 self.contact_number = normalized
 
+        # Enforce exactly one active Barangay LGU account per barangay
+        if self.account_type == 'Barangay' and self.barangay:
+            import re
+            clean_b = re.sub(r'^(brgy\.?|barangay)\s+', '', self.barangay, flags=re.IGNORECASE).strip().lower()
+            existing_conflict = tbl_user_profile.objects.filter(
+                account_type='Barangay'
+            ).exclude(pk=self.pk)
+            for ex in existing_conflict:
+                ex_clean = re.sub(r'^(brgy\.?|barangay)\s+', '', ex.barangay or '', flags=re.IGNORECASE).strip().lower()
+                if ex_clean == clean_b:
+                    raise ValidationError({
+                        'barangay': f"An official LGU account for Barangay '{self.barangay}' already exists. Only one LGU account per barangay is allowed."
+                    })
+
     def save(self, *args, **kwargs):
         if self.contact_number:
             from core.utils import normalize_ph_phone_number
             normalized = normalize_ph_phone_number(self.contact_number)
             if normalized:
                 self.contact_number = normalized
+
+        # Standardize barangay name for Barangay LGU accounts and prevent duplicate save
+        if self.account_type == 'Barangay' and self.barangay:
+            import re
+            clean_b = re.sub(r'^(brgy\.?|barangay)\s+', '', self.barangay, flags=re.IGNORECASE).strip()
+            self.barangay = clean_b.title()
+
+            existing_conflict = tbl_user_profile.objects.filter(
+                account_type='Barangay',
+                barangay__iexact=self.barangay
+            ).exclude(pk=self.pk).exists()
+            if existing_conflict:
+                from django.db import IntegrityError
+                raise IntegrityError(f"unique_lgu_account_per_barangay: An account for Barangay '{self.barangay}' already exists.")
+        if self.account_type in ['Barangay', 'Admin']:
+            self.is_staff = True
+
         super().save(*args, **kwargs)
 
     def __str__(self):
@@ -422,6 +453,13 @@ class tbl_user_profile(AbstractUser):
             models.UniqueConstraint(
                 fields=['contact_number'],
                 name='unique_tbl_user_profile_contact_number'
+            ),
+
+            # Enforce strictly ONE account per barangay for Barangay LGU accounts
+            models.UniqueConstraint(
+                fields=['barangay'],
+                condition=Q(account_type='Barangay') & ~Q(barangay__isnull=True) & ~Q(barangay=''),
+                name='unique_lgu_account_per_barangay'
             ),
 
             CheckConstraint(

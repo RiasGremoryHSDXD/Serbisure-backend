@@ -20,8 +20,10 @@ from rest_framework.throttling import AnonRateThrottle, UserRateThrottle
 from rest_framework.exceptions import Throttled
 from django.core.cache import cache
 from django.db.models import Q
-from core.utils import check_valid_uuid, get_signed_cloudinary_url
+from core.utils import check_valid_uuid, get_signed_cloudinary_url, normalize_ph_phone_number
 import math
+import re
+from django.db import IntegrityError
 from drf_spectacular.utils import extend_schema, OpenApiParameter
 from drf_spectacular.types import OpenApiTypes
 
@@ -361,10 +363,14 @@ class AdminDashboardStatsView(APIView):
         # Homeowners/Kasambahays who live in Agusan/Carmen will NOT pollute this list.
         barangay_breakdown = []
         for b_name in all_barangays:
+            import re
+            b_clean = re.sub(r'^(brgy\.?|barangay)\s+', '', b_name, flags=re.IGNORECASE).strip()
+
             b_workers = tbl_user_profile.objects.filter(
-                account_type='Kasambahay'
+                account_type='Kasambahay', is_active=True
             ).filter(
-                Q(barangay__iexact=b_name) | Q(city__icontains=b_name) | Q(street__icontains=b_name)
+                Q(barangay__iexact=b_name) | Q(barangay__icontains=b_clean) |
+                Q(city__icontains=b_clean) | Q(street__icontains=b_clean)
             )
             b_total = b_workers.count()
             b_employed = b_workers.filter(
@@ -372,12 +378,46 @@ class AdminDashboardStatsView(APIView):
             ).distinct().count()
             b_avail = max(0, b_total - b_employed)
             b_ratio = round((b_employed / b_total * 100)) if b_total > 0 else 0
+
+            # All registered residents (Kasambahay + Homeowner) in this barangay
+            b_all_users = list(tbl_user_profile.objects.filter(
+                account_type__in=['Kasambahay', 'Homeowner'], is_active=True
+            ).filter(
+                Q(barangay__iexact=b_name) | Q(barangay__icontains=b_clean) |
+                Q(city__icontains=b_clean) | Q(street__icontains=b_clean)
+            ).prefetch_related('documents'))
+
+            b_verified = 0
+            b_pending = 0
+            b_rejected = 0
+            b_no_docs = 0
+
+            for u in b_all_users:
+                docs = list(u.documents.all())
+                if not docs:
+                    b_no_docs += 1
+                else:
+                    doc_statuses = [d.verification_status for d in docs]
+                    if 'Pending' in doc_statuses:
+                        b_pending += 1
+                    elif 'Rejected' in doc_statuses:
+                        b_rejected += 1
+                    elif all(s == 'Verified' for s in doc_statuses):
+                        b_verified += 1
+                    else:
+                        b_no_docs += 1
+
             barangay_breakdown.append({
                 "name": b_name,
+                "totalRegistered": len(b_all_users),
                 "totalWorkers": b_total,
                 "employed": b_employed,
                 "available": b_avail,
                 "employmentRatio": b_ratio,
+                "pending": b_pending,
+                "verified": b_verified,
+                "rejected": b_rejected,
+                "noDocuments": b_no_docs,
                 "status": "ACTIVE"
             })
 
@@ -682,19 +722,19 @@ class AdminVerificationStatusStatsView(APIView):
         rejected = 0
 
         for user in users:
-            try:
-                vs = user.verification_status
-            except Exception:
-                vs = 'Unverified'
-
-            if vs == 'Verified':
-                verified += 1
-            elif vs == 'Pending':
-                pending += 1
-            elif vs == 'Rejected':
-                rejected += 1
-            else:
+            docs = list(user.documents.all())
+            if not docs:
                 unverified += 1
+            else:
+                doc_statuses = [d.verification_status for d in docs]
+                if 'Pending' in doc_statuses:
+                    pending += 1
+                elif 'Rejected' in doc_statuses:
+                    rejected += 1
+                elif all(s == 'Verified' for s in doc_statuses):
+                    verified += 1
+                else:
+                    unverified += 1
 
         total = verified + pending + unverified + rejected
 
@@ -816,6 +856,129 @@ class AdminActiveBarangaysView(APIView):
             'active_lgus': active_normalized,
             'user_barangays': all_user_barangays,
         }, status=status.HTTP_200_OK)
+
+    def post(self, request):
+        """
+        Registers a new official administrative Barangay LGU jurisdiction in the database.
+        Creates an active Barangay user account in tbl_user_profile, ensuring strict persistence.
+        """
+        data = request.data
+        raw_name = data.get('name') or data.get('barangay')
+        if not raw_name or not str(raw_name).strip():
+            return Response({'error': 'Barangay name is required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        clean_b = re.sub(r'^(brgy\.?|barangay)\s+', '', str(raw_name), flags=re.IGNORECASE).strip().title()
+
+        # Check for duplicate Barangay account
+        existing = tbl_user_profile.objects.filter(
+            account_type='Barangay',
+            is_active=True
+        )
+        for ex in existing:
+            ex_clean = re.sub(r'^(brgy\.?|barangay)\s+', '', ex.barangay or '', flags=re.IGNORECASE).strip().lower()
+            if ex_clean == clean_b.lower():
+                return Response(
+                    {'error': f"An official LGU account for Barangay {clean_b} is already registered in the directory."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+        slug = re.sub(r'[^a-z0-9]', '', clean_b.lower())
+        email = data.get('email') or f"{slug}@lgu.serbisure.ph"
+        if tbl_user_profile.objects.filter(email=email).exists():
+            import uuid
+            email = f"{slug}_{str(uuid.uuid4())[:4]}@lgu.serbisure.ph"
+
+        contact_number = (data.get('contact_number') or '').strip()
+        if contact_number:
+            clean_digits = re.sub(r'\D', '', contact_number)
+            if clean_digits.startswith('639') and len(clean_digits) == 12:
+                contact_number = f"+{clean_digits}"
+            elif clean_digits.startswith('09') and len(clean_digits) == 11:
+                contact_number = f"+63{clean_digits[1:]}"
+            elif clean_digits.startswith('9') and len(clean_digits) == 10:
+                contact_number = f"+63{clean_digits}"
+            else:
+                return Response(
+                    {'error': "Please enter a valid 10-digit mobile number starting with 9 (e.g. 917 123 4567)."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            # Check if this contact number is already registered in the system
+            if tbl_user_profile.objects.filter(contact_number=contact_number).exists():
+                display_num = f"+63 {contact_number[3:6]} {contact_number[6:9]} {contact_number[9:]}" if len(contact_number) == 13 else contact_number
+                return Response(
+                    {'error': f"The contact number {display_num} is already registered to another account. Please use a different hotline number."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+        if not contact_number:
+            import hashlib
+            base_h = int(hashlib.md5(f"lgu_{clean_b}".encode('utf-8')).hexdigest()[:8], 16) % 900000000 + 100000000
+            contact_number = f"+639{base_h}"
+            attempts = 0
+            while tbl_user_profile.objects.filter(contact_number=contact_number).exists() and attempts < 20:
+                base_h = (base_h + 1) % 900000000 + 100000000
+                contact_number = f"+639{base_h}"
+                attempts += 1
+
+        try:
+            user = tbl_user_profile(
+                username=f"lgu_{slug}",
+                email=email,
+                first_name=clean_b,
+                last_name="Desk",
+                account_type="Barangay",
+                barangay=clean_b,
+                region=data.get('region') or 'Region X - Northern Mindanao',
+                province=data.get('province') or 'Misamis Oriental',
+                city=data.get('city') or 'City of Cagayan De Oro',
+                street=data.get('street') or '',
+                zipcode=data.get('zipcode') or '9000',
+                country=data.get('country') or 'Philippines',
+                contact_number=contact_number,
+                is_active=True,
+                is_staff=True,
+            )
+            user.set_password(data.get('password') or 'Lgu@12345')
+            user.save()
+        except IntegrityError as e:
+            err_str = str(e).lower()
+            if 'contact_number' in err_str:
+                display_num = f"+63 {contact_number[3:6]} {contact_number[6:9]} {contact_number[9:]}" if len(contact_number) == 13 else contact_number
+                error_msg = f"The contact number {display_num} is already registered to another account. Please use a different hotline number."
+            elif 'unique_lgu_account_per_barangay' in err_str or 'barangay' in err_str:
+                error_msg = f"Barangay {clean_b} is already registered in the directory. Each barangay can only have one official account."
+            elif 'email' in err_str:
+                error_msg = f"The email address '{email}' is already in use by another account. Please use a different email."
+            elif 'username' in err_str:
+                error_msg = f"The username 'lgu_{slug}' is already taken. Please try again."
+            else:
+                error_msg = f"Barangay {clean_b} could not be registered because an account with matching details already exists."
+            return Response(
+                {'error': error_msg},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        except Exception as e:
+            return Response(
+                {'error': f"Unable to register Barangay {clean_b}. Please verify the form details and try again."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        return Response({
+            'success': True,
+            'message': f"Barangay {clean_b} successfully registered in the database.",
+            'barangay': {
+                'name': clean_b,
+                'email': user.email,
+                'barangay': clean_b,
+                'city': user.city,
+                'province': user.province,
+                'region': user.region,
+                'zipcode': user.zipcode,
+                'country': user.country,
+                'status': 'ACTIVE',
+            }
+        }, status=status.HTTP_201_CREATED)
 
 
 class ProfileImageUploadThrottle(UserRateThrottle):
@@ -1185,3 +1348,134 @@ class ExportUserDataView(APIView):
         }
 
         return Response({'user_data': data}, status=status.HTTP_200_OK)
+
+
+class AdminBarangayDeskProfileView(APIView):
+    """
+    Dedicated endpoint for Barangay Desk Profile in the Admin Portal.
+    Allows authenticated LGU officers (or Superadmins) to view and update
+    the desk information stored across existing tbl_user_profile columns:
+    - barangay: user's barangay name
+    - street: desk / barangay hall physical address
+    - contact_number: official desk hotline
+    - user_about: desk operating hours & public information
+    - first_name & last_name: desk officer-in-charge
+    - email: desk official email
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        barangay_param = request.query_params.get('barangay')
+
+        # If Superadmin specifies ?barangay=..., look up that LGU officer
+        if user.account_type in ['Admin'] or user.is_staff or user.is_superuser:
+            if barangay_param and barangay_param.lower() not in ['all', 'all barangays']:
+                target_user = tbl_user_profile.objects.filter(
+                    account_type='Barangay',
+                    barangay__iexact=barangay_param.strip()
+                ).first()
+                if target_user:
+                    user = target_user
+
+        officer_name = f"{user.first_name} {user.last_name}".strip()
+
+        return Response({
+            'success': True,
+            'barangay': user.barangay or '',
+            'street': user.street or '',
+            'contact_number': user.contact_number or '',
+            'user_about': user.user_about or '',
+            'first_name': user.first_name or '',
+            'last_name': user.last_name or '',
+            'officer_name': officer_name,
+            'email': user.email or '',
+            'city': user.city or 'Cagayan de Oro City',
+            'province': user.province or 'Misamis Oriental',
+            'zipcode': user.zipcode or '9000',
+        }, status=status.HTTP_200_OK)
+
+    def put(self, request):
+        return self.patch(request)
+
+    def patch(self, request):
+        user = request.user
+        barangay_param = request.data.get('barangay')
+
+        # Allow Superadmin to update a specific barangay's officer profile
+        if (user.account_type in ['Admin'] or user.is_staff or user.is_superuser) and barangay_param:
+            target_user = tbl_user_profile.objects.filter(
+                account_type='Barangay',
+                barangay__iexact=barangay_param.strip()
+            ).first()
+            if target_user:
+                user = target_user
+
+        data = request.data
+        update_fields = []
+
+        # 1. Street (Address)
+        if 'street' in data:
+            street_val = (data.get('street') or '').strip()
+            if len(street_val) > 100:
+                return Response({'error': 'Address cannot exceed 100 characters.'}, status=status.HTTP_400_BAD_REQUEST)
+            user.street = street_val
+            update_fields.append('street')
+
+        # 2. Contact Number (Hotline)
+        if 'contact_number' in data:
+            raw_contact = (data.get('contact_number') or '').strip()
+            if raw_contact:
+                normalized = normalize_ph_phone_number(raw_contact)
+                if not normalized or len(normalized) != 13 or not normalized.startswith('+639'):
+                    return Response({'error': "Hotline must be a valid PH mobile number starting with '+639' (e.g., +639123456789)."}, status=status.HTTP_400_BAD_REQUEST)
+                # Check uniqueness against other users
+                conflict = tbl_user_profile.objects.filter(contact_number=normalized).exclude(id=user.id).exists()
+                if conflict:
+                    return Response({'error': 'This contact number is already registered by another account.'}, status=status.HTTP_400_BAD_REQUEST)
+                user.contact_number = normalized
+                update_fields.append('contact_number')
+
+        # 3. User About (Office Hours & Desk Info)
+        if 'user_about' in data:
+            about_val = (data.get('user_about') or '').strip()
+            if len(about_val) > 500:
+                return Response({'error': 'Office hours & desk info cannot exceed 500 characters.'}, status=status.HTTP_400_BAD_REQUEST)
+            user.user_about = about_val
+            update_fields.append('user_about')
+
+        # 4. Officer First Name & Last Name
+        if 'first_name' in data:
+            fn_val = (data.get('first_name') or '').strip()
+            if fn_val:
+                user.first_name = fn_val[:100]
+                update_fields.append('first_name')
+
+        if 'last_name' in data:
+            ln_val = (data.get('last_name') or '').strip()
+            if ln_val:
+                user.last_name = ln_val[:100]
+                update_fields.append('last_name')
+
+        if update_fields:
+            user.save(update_fields=list(set(update_fields)))
+
+        officer_name = f"{user.first_name} {user.last_name}".strip()
+
+        return Response({
+            'success': True,
+            'message': 'Barangay desk profile updated successfully.',
+            'profile': {
+                'barangay': user.barangay or '',
+                'street': user.street or '',
+                'contact_number': user.contact_number or '',
+                'user_about': user.user_about or '',
+                'first_name': user.first_name or '',
+                'last_name': user.last_name or '',
+                'officer_name': officer_name,
+                'email': user.email or '',
+                'city': user.city or 'Cagayan de Oro City',
+                'province': user.province or 'Misamis Oriental',
+                'zipcode': user.zipcode or '9000',
+            }
+        }, status=status.HTTP_200_OK)
