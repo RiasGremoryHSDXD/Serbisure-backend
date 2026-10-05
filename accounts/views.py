@@ -391,19 +391,19 @@ class AdminDashboardStatsView(APIView):
             b_no_docs = 0
 
             for u in b_all_users:
-                try:
-                    vs = u.verification_status
-                except Exception:
-                    vs = 'Unverified'
-
-                if vs == 'Verified':
-                    b_verified += 1
-                elif vs == 'Pending':
-                    b_pending += 1
-                elif vs == 'Rejected':
-                    b_rejected += 1
-                else:
+                docs = list(u.documents.all())
+                if not docs:
                     b_no_docs += 1
+                else:
+                    doc_statuses = [d.verification_status for d in docs]
+                    if 'Pending' in doc_statuses:
+                        b_pending += 1
+                    elif 'Rejected' in doc_statuses:
+                        b_rejected += 1
+                    elif all(s == 'Verified' for s in doc_statuses):
+                        b_verified += 1
+                    else:
+                        b_no_docs += 1
 
             barangay_breakdown.append({
                 "name": b_name,
@@ -720,19 +720,19 @@ class AdminVerificationStatusStatsView(APIView):
         rejected = 0
 
         for user in users:
-            try:
-                vs = user.verification_status
-            except Exception:
-                vs = 'Unverified'
-
-            if vs == 'Verified':
-                verified += 1
-            elif vs == 'Pending':
-                pending += 1
-            elif vs == 'Rejected':
-                rejected += 1
-            else:
+            docs = list(user.documents.all())
+            if not docs:
                 unverified += 1
+            else:
+                doc_statuses = [d.verification_status for d in docs]
+                if 'Pending' in doc_statuses:
+                    pending += 1
+                elif 'Rejected' in doc_statuses:
+                    rejected += 1
+                elif all(s == 'Verified' for s in doc_statuses):
+                    verified += 1
+                else:
+                    unverified += 1
 
         total = verified + pending + unverified + rejected
 
