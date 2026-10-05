@@ -93,11 +93,41 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
             return user
         except IntegrityError as e:
             err_str = str(e).lower()
-            if 'contact_number' in err_str:
+            if 'unique_lgu_account_per_barangay' in err_str or 'barangay' in err_str:
+                raise serializers.ValidationError({"barangay": ["An official Barangay LGU account already exists for this barangay. Only one LGU account per barangay is permitted."]})
+            elif 'contact_number' in err_str:
                 raise serializers.ValidationError({"contact_number": ["A user with this contact number is already registered."]})
             elif 'email' in err_str:
                 raise serializers.ValidationError({"email": ["A user with this email address is already registered."]})
             raise serializers.ValidationError({"detail": "An account with these details already exists."})
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        account_type = attrs.get('account_type')
+        barangay = attrs.get('barangay')
+
+        if account_type == 'Barangay':
+            if not barangay or not str(barangay).strip():
+                raise serializers.ValidationError({
+                    "barangay": ["A valid barangay name is required when registering an official Barangay LGU account."]
+                })
+
+            clean_b = re.sub(r'^(brgy\.?|barangay)\s+', '', str(barangay), flags=re.IGNORECASE).strip()
+            # Standardize title case
+            attrs['barangay'] = clean_b.title()
+
+            existing = tbl_user_profile.objects.filter(
+                account_type='Barangay',
+                is_active=True
+            )
+            for ex in existing:
+                ex_clean = re.sub(r'^(brgy\.?|barangay)\s+', '', ex.barangay or '', flags=re.IGNORECASE).strip().lower()
+                if ex_clean == clean_b.lower():
+                    raise serializers.ValidationError({
+                        "barangay": [f"An official LGU account for Barangay {clean_b.title()} already exists. Only one LGU account per barangay is permitted."]
+                    })
+
+        return attrs
     
     # Mandatory Value in creating a account
     # def mandatory_field_account_creation(self, value):

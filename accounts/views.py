@@ -22,6 +22,8 @@ from django.core.cache import cache
 from django.db.models import Q
 from core.utils import check_valid_uuid, get_signed_cloudinary_url, normalize_ph_phone_number
 import math
+import re
+from django.db import IntegrityError
 from drf_spectacular.utils import extend_schema, OpenApiParameter
 from drf_spectacular.types import OpenApiTypes
 
@@ -854,6 +856,129 @@ class AdminActiveBarangaysView(APIView):
             'active_lgus': active_normalized,
             'user_barangays': all_user_barangays,
         }, status=status.HTTP_200_OK)
+
+    def post(self, request):
+        """
+        Registers a new official administrative Barangay LGU jurisdiction in the database.
+        Creates an active Barangay user account in tbl_user_profile, ensuring strict persistence.
+        """
+        data = request.data
+        raw_name = data.get('name') or data.get('barangay')
+        if not raw_name or not str(raw_name).strip():
+            return Response({'error': 'Barangay name is required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        clean_b = re.sub(r'^(brgy\.?|barangay)\s+', '', str(raw_name), flags=re.IGNORECASE).strip().title()
+
+        # Check for duplicate Barangay account
+        existing = tbl_user_profile.objects.filter(
+            account_type='Barangay',
+            is_active=True
+        )
+        for ex in existing:
+            ex_clean = re.sub(r'^(brgy\.?|barangay)\s+', '', ex.barangay or '', flags=re.IGNORECASE).strip().lower()
+            if ex_clean == clean_b.lower():
+                return Response(
+                    {'error': f"An official LGU account for Barangay {clean_b} is already registered in the directory."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+        slug = re.sub(r'[^a-z0-9]', '', clean_b.lower())
+        email = data.get('email') or f"{slug}@lgu.serbisure.ph"
+        if tbl_user_profile.objects.filter(email=email).exists():
+            import uuid
+            email = f"{slug}_{str(uuid.uuid4())[:4]}@lgu.serbisure.ph"
+
+        contact_number = (data.get('contact_number') or '').strip()
+        if contact_number:
+            clean_digits = re.sub(r'\D', '', contact_number)
+            if clean_digits.startswith('639') and len(clean_digits) == 12:
+                contact_number = f"+{clean_digits}"
+            elif clean_digits.startswith('09') and len(clean_digits) == 11:
+                contact_number = f"+63{clean_digits[1:]}"
+            elif clean_digits.startswith('9') and len(clean_digits) == 10:
+                contact_number = f"+63{clean_digits}"
+            else:
+                return Response(
+                    {'error': "Please enter a valid 10-digit mobile number starting with 9 (e.g. 917 123 4567)."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            # Check if this contact number is already registered in the system
+            if tbl_user_profile.objects.filter(contact_number=contact_number).exists():
+                display_num = f"+63 {contact_number[3:6]} {contact_number[6:9]} {contact_number[9:]}" if len(contact_number) == 13 else contact_number
+                return Response(
+                    {'error': f"The contact number {display_num} is already registered to another account. Please use a different hotline number."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+        if not contact_number:
+            import hashlib
+            base_h = int(hashlib.md5(f"lgu_{clean_b}".encode('utf-8')).hexdigest()[:8], 16) % 900000000 + 100000000
+            contact_number = f"+639{base_h}"
+            attempts = 0
+            while tbl_user_profile.objects.filter(contact_number=contact_number).exists() and attempts < 20:
+                base_h = (base_h + 1) % 900000000 + 100000000
+                contact_number = f"+639{base_h}"
+                attempts += 1
+
+        try:
+            user = tbl_user_profile(
+                username=f"lgu_{slug}",
+                email=email,
+                first_name=clean_b,
+                last_name="Desk",
+                account_type="Barangay",
+                barangay=clean_b,
+                region=data.get('region') or 'Region X - Northern Mindanao',
+                province=data.get('province') or 'Misamis Oriental',
+                city=data.get('city') or 'City of Cagayan De Oro',
+                street=data.get('street') or '',
+                zipcode=data.get('zipcode') or '9000',
+                country=data.get('country') or 'Philippines',
+                contact_number=contact_number,
+                is_active=True,
+                is_staff=True,
+            )
+            user.set_password(data.get('password') or 'Lgu@12345')
+            user.save()
+        except IntegrityError as e:
+            err_str = str(e).lower()
+            if 'contact_number' in err_str:
+                display_num = f"+63 {contact_number[3:6]} {contact_number[6:9]} {contact_number[9:]}" if len(contact_number) == 13 else contact_number
+                error_msg = f"The contact number {display_num} is already registered to another account. Please use a different hotline number."
+            elif 'unique_lgu_account_per_barangay' in err_str or 'barangay' in err_str:
+                error_msg = f"Barangay {clean_b} is already registered in the directory. Each barangay can only have one official account."
+            elif 'email' in err_str:
+                error_msg = f"The email address '{email}' is already in use by another account. Please use a different email."
+            elif 'username' in err_str:
+                error_msg = f"The username 'lgu_{slug}' is already taken. Please try again."
+            else:
+                error_msg = f"Barangay {clean_b} could not be registered because an account with matching details already exists."
+            return Response(
+                {'error': error_msg},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        except Exception as e:
+            return Response(
+                {'error': f"Unable to register Barangay {clean_b}. Please verify the form details and try again."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        return Response({
+            'success': True,
+            'message': f"Barangay {clean_b} successfully registered in the database.",
+            'barangay': {
+                'name': clean_b,
+                'email': user.email,
+                'barangay': clean_b,
+                'city': user.city,
+                'province': user.province,
+                'region': user.region,
+                'zipcode': user.zipcode,
+                'country': user.country,
+                'status': 'ACTIVE',
+            }
+        }, status=status.HTTP_201_CREATED)
 
 
 class ProfileImageUploadThrottle(UserRateThrottle):
