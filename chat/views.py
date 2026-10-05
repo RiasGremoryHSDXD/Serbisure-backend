@@ -72,6 +72,14 @@ def _get_throttle_message(wait):
     return f"Too many requests. Please try again in {math.ceil(wait / 60)} minutes."
 
 
+def _is_barangay_to_barangay(sender, receiver_user):
+    """Returns True if a Barangay Admin is trying to message another Barangay Admin."""
+    return (
+        getattr(sender, 'account_type', None) == 'Barangay' and
+        getattr(receiver_user, 'account_type', None) == 'Barangay'
+    )
+
+
 # ─────────────────────────────────────────────
 # POST /api/v1/chat/send/
 # ─────────────────────────────────────────────
@@ -99,6 +107,19 @@ class SendMessageView(generics.CreateAPIView):
         cached_response = cache.get(f'chat_send_{idempotency_key}')
         if cached_response:
             return Response(cached_response['data'], status=cached_response['status'])
+
+        # RBAC: Block Barangay-to-Barangay messaging
+        _receiver_raw = request.data.get('receiver_id')
+        if _receiver_raw and check_valid_uuid(str(_receiver_raw)):
+            try:
+                _receiver_user = User.objects.get(id=_receiver_raw)
+                if _is_barangay_to_barangay(request.user, _receiver_user):
+                    return Response(
+                        {"detail": "Barangay admins are not authorized to message other Barangay admins."},
+                        status=status.HTTP_403_FORBIDDEN
+                    )
+            except User.DoesNotExist:
+                pass  # Let the serializer handle the missing receiver downstream
 
         # Step 3: Validate serializer input
         serializer = self.get_serializer(data=request.data)
@@ -188,6 +209,13 @@ class SendImageMessageView(generics.CreateAPIView):
             return Response(
                 {"detail": "Recipient user not found."},
                 status=status.HTTP_404_NOT_FOUND
+            )
+
+        # RBAC: Block Barangay-to-Barangay messaging
+        if _is_barangay_to_barangay(request.user, receiver_user):
+            return Response(
+                {"detail": "Barangay admins are not authorized to message other Barangay admins."},
+                status=status.HTTP_403_FORBIDDEN
             )
 
         # Step 4: Check image file input exists (Edge Case #5, #12)
@@ -553,7 +581,7 @@ class ChatInboxView(generics.GenericAPIView):
                 'partner_id': partner.id,
                 'partner_name': f"{partner.first_name} {partner.last_name}".strip(),
                 'partner_account_type': partner.account_type,
-                'partner_profile_link': public_id,
+                'partner_profile_link': partner_profile_image,
                 'last_message': last_message_text,
                 'last_message_time': last_msg.createdAt,
                 'unread_count': unread_count,
