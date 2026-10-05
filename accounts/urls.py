@@ -22,6 +22,7 @@ from .views import (
     AdminLoginView,
     AdminActiveBarangaysView,
     AdminVerificationStatusStatsView,
+    AdminBarangayDeskProfileView,
 )
 
 urlpatterns = [
@@ -78,4 +79,5 @@ urlpatterns = [
     path('admin/dashboard-activity/', AdminDashboardActivityView.as_view(), name='admin-dashboard-activity'),
     path('admin/monthly-trend/', AdminMonthlyTrendView.as_view(), name='admin-monthly-trend'),
     path('admin/verification-status-stats/', AdminVerificationStatusStatsView.as_view(), name='admin-verification-status-stats'),
+    path('admin/desk-profile/', AdminBarangayDeskProfileView.as_view(), name='admin-barangay-desk-profile'),
 ]

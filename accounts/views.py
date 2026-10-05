@@ -20,7 +20,7 @@ from rest_framework.throttling import AnonRateThrottle, UserRateThrottle
 from rest_framework.exceptions import Throttled
 from django.core.cache import cache
 from django.db.models import Q
-from core.utils import check_valid_uuid, get_signed_cloudinary_url
+from core.utils import check_valid_uuid, get_signed_cloudinary_url, normalize_ph_phone_number
 import math
 from drf_spectacular.utils import extend_schema, OpenApiParameter
 from drf_spectacular.types import OpenApiTypes
@@ -361,10 +361,14 @@ class AdminDashboardStatsView(APIView):
         # Homeowners/Kasambahays who live in Agusan/Carmen will NOT pollute this list.
         barangay_breakdown = []
         for b_name in all_barangays:
+            import re
+            b_clean = re.sub(r'^(brgy\.?|barangay)\s+', '', b_name, flags=re.IGNORECASE).strip()
+
             b_workers = tbl_user_profile.objects.filter(
-                account_type='Kasambahay'
+                account_type='Kasambahay', is_active=True
             ).filter(
-                Q(barangay__iexact=b_name) | Q(city__icontains=b_name) | Q(street__icontains=b_name)
+                Q(barangay__iexact=b_name) | Q(barangay__icontains=b_clean) |
+                Q(city__icontains=b_clean) | Q(street__icontains=b_clean)
             )
             b_total = b_workers.count()
             b_employed = b_workers.filter(
@@ -372,12 +376,46 @@ class AdminDashboardStatsView(APIView):
             ).distinct().count()
             b_avail = max(0, b_total - b_employed)
             b_ratio = round((b_employed / b_total * 100)) if b_total > 0 else 0
+
+            # All registered residents (Kasambahay + Homeowner) in this barangay
+            b_all_users = list(tbl_user_profile.objects.filter(
+                account_type__in=['Kasambahay', 'Homeowner'], is_active=True
+            ).filter(
+                Q(barangay__iexact=b_name) | Q(barangay__icontains=b_clean) |
+                Q(city__icontains=b_clean) | Q(street__icontains=b_clean)
+            ).prefetch_related('documents'))
+
+            b_verified = 0
+            b_pending = 0
+            b_rejected = 0
+            b_no_docs = 0
+
+            for u in b_all_users:
+                try:
+                    vs = u.verification_status
+                except Exception:
+                    vs = 'Unverified'
+
+                if vs == 'Verified':
+                    b_verified += 1
+                elif vs == 'Pending':
+                    b_pending += 1
+                elif vs == 'Rejected':
+                    b_rejected += 1
+                else:
+                    b_no_docs += 1
+
             barangay_breakdown.append({
                 "name": b_name,
+                "totalRegistered": len(b_all_users),
                 "totalWorkers": b_total,
                 "employed": b_employed,
                 "available": b_avail,
                 "employmentRatio": b_ratio,
+                "pending": b_pending,
+                "verified": b_verified,
+                "rejected": b_rejected,
+                "noDocuments": b_no_docs,
                 "status": "ACTIVE"
             })
 
@@ -1185,3 +1223,134 @@ class ExportUserDataView(APIView):
         }
 
         return Response({'user_data': data}, status=status.HTTP_200_OK)
+
+
+class AdminBarangayDeskProfileView(APIView):
+    """
+    Dedicated endpoint for Barangay Desk Profile in the Admin Portal.
+    Allows authenticated LGU officers (or Superadmins) to view and update
+    the desk information stored across existing tbl_user_profile columns:
+    - barangay: user's barangay name
+    - street: desk / barangay hall physical address
+    - contact_number: official desk hotline
+    - user_about: desk operating hours & public information
+    - first_name & last_name: desk officer-in-charge
+    - email: desk official email
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        barangay_param = request.query_params.get('barangay')
+
+        # If Superadmin specifies ?barangay=..., look up that LGU officer
+        if user.account_type in ['Admin'] or user.is_staff or user.is_superuser:
+            if barangay_param and barangay_param.lower() not in ['all', 'all barangays']:
+                target_user = tbl_user_profile.objects.filter(
+                    account_type='Barangay',
+                    barangay__iexact=barangay_param.strip()
+                ).first()
+                if target_user:
+                    user = target_user
+
+        officer_name = f"{user.first_name} {user.last_name}".strip()
+
+        return Response({
+            'success': True,
+            'barangay': user.barangay or '',
+            'street': user.street or '',
+            'contact_number': user.contact_number or '',
+            'user_about': user.user_about or '',
+            'first_name': user.first_name or '',
+            'last_name': user.last_name or '',
+            'officer_name': officer_name,
+            'email': user.email or '',
+            'city': user.city or 'Cagayan de Oro City',
+            'province': user.province or 'Misamis Oriental',
+            'zipcode': user.zipcode or '9000',
+        }, status=status.HTTP_200_OK)
+
+    def put(self, request):
+        return self.patch(request)
+
+    def patch(self, request):
+        user = request.user
+        barangay_param = request.data.get('barangay')
+
+        # Allow Superadmin to update a specific barangay's officer profile
+        if (user.account_type in ['Admin'] or user.is_staff or user.is_superuser) and barangay_param:
+            target_user = tbl_user_profile.objects.filter(
+                account_type='Barangay',
+                barangay__iexact=barangay_param.strip()
+            ).first()
+            if target_user:
+                user = target_user
+
+        data = request.data
+        update_fields = []
+
+        # 1. Street (Address)
+        if 'street' in data:
+            street_val = (data.get('street') or '').strip()
+            if len(street_val) > 100:
+                return Response({'error': 'Address cannot exceed 100 characters.'}, status=status.HTTP_400_BAD_REQUEST)
+            user.street = street_val
+            update_fields.append('street')
+
+        # 2. Contact Number (Hotline)
+        if 'contact_number' in data:
+            raw_contact = (data.get('contact_number') or '').strip()
+            if raw_contact:
+                normalized = normalize_ph_phone_number(raw_contact)
+                if not normalized or len(normalized) != 13 or not normalized.startswith('+639'):
+                    return Response({'error': "Hotline must be a valid PH mobile number starting with '+639' (e.g., +639123456789)."}, status=status.HTTP_400_BAD_REQUEST)
+                # Check uniqueness against other users
+                conflict = tbl_user_profile.objects.filter(contact_number=normalized).exclude(id=user.id).exists()
+                if conflict:
+                    return Response({'error': 'This contact number is already registered by another account.'}, status=status.HTTP_400_BAD_REQUEST)
+                user.contact_number = normalized
+                update_fields.append('contact_number')
+
+        # 3. User About (Office Hours & Desk Info)
+        if 'user_about' in data:
+            about_val = (data.get('user_about') or '').strip()
+            if len(about_val) > 500:
+                return Response({'error': 'Office hours & desk info cannot exceed 500 characters.'}, status=status.HTTP_400_BAD_REQUEST)
+            user.user_about = about_val
+            update_fields.append('user_about')
+
+        # 4. Officer First Name & Last Name
+        if 'first_name' in data:
+            fn_val = (data.get('first_name') or '').strip()
+            if fn_val:
+                user.first_name = fn_val[:100]
+                update_fields.append('first_name')
+
+        if 'last_name' in data:
+            ln_val = (data.get('last_name') or '').strip()
+            if ln_val:
+                user.last_name = ln_val[:100]
+                update_fields.append('last_name')
+
+        if update_fields:
+            user.save(update_fields=list(set(update_fields)))
+
+        officer_name = f"{user.first_name} {user.last_name}".strip()
+
+        return Response({
+            'success': True,
+            'message': 'Barangay desk profile updated successfully.',
+            'profile': {
+                'barangay': user.barangay or '',
+                'street': user.street or '',
+                'contact_number': user.contact_number or '',
+                'user_about': user.user_about or '',
+                'first_name': user.first_name or '',
+                'last_name': user.last_name or '',
+                'officer_name': officer_name,
+                'email': user.email or '',
+                'city': user.city or 'Cagayan de Oro City',
+                'province': user.province or 'Misamis Oriental',
+                'zipcode': user.zipcode or '9000',
+            }
+        }, status=status.HTTP_200_OK)
