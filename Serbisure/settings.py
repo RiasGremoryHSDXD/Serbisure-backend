@@ -54,7 +54,6 @@ INSTALLED_APPS = [
     'drf_spectacular',
     
     # 3. YOUR CUSTOM APPS
-    'testing_database',
     'accounts',
     'core',
     'verifications',
