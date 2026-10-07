@@ -349,6 +349,16 @@ class tbl_user_profile(AbstractUser):
         help_text="Kasambahay employment status: True if On the Job, False if Available"
     )
 
+    cancellation_strikes = models.IntegerField(
+        default=0,
+        help_text="Accumulated booking cancellation penalty strikes"
+    )
+
+    is_restricted = models.BooleanField(
+        default=False,
+        help_text="Indicates whether user account is restricted from bookings"
+    )
+
     user_about = models.TextField(
         max_length=500,
         blank=True,

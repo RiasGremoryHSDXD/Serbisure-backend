@@ -946,7 +946,7 @@ class AdminActiveBarangaysView(APIView):
             if 'contact_number' in err_str:
                 display_num = f"+63 {contact_number[3:6]} {contact_number[6:9]} {contact_number[9:]}" if len(contact_number) == 13 else contact_number
                 error_msg = f"The contact number {display_num} is already registered to another account. Please use a different hotline number."
-            elif 'unique_lgu_account_per_barangay' in err_str or 'barangay' in err_str:
+            elif 'unique_lgu_account_per_barangay' in err_str:
                 error_msg = f"Barangay {clean_b} is already registered in the directory. Each barangay can only have one official account."
             elif 'email' in err_str:
                 error_msg = f"The email address '{email}' is already in use by another account. Please use a different email."
