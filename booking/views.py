@@ -405,7 +405,9 @@ class MyBookingsView(generics.ListAPIView):
 
         status_param = self.request.query_params.get('status', '').strip().lower()
         if status_param == 'active':
-            qs = qs.filter(booking_status__in=['Pending', 'Accepted', 'InProgress'])
+            qs = qs.filter(booking_status__in=['Accepted', 'InProgress'])
+        elif status_param == 'pending':
+            qs = qs.filter(booking_status='Pending')
         elif status_param == 'completed':
             qs = qs.filter(booking_status='Completed')
         elif status_param == 'cancelled':
@@ -419,7 +421,7 @@ class MyBookingsView(generics.ListAPIView):
 class MyAssignedBookingsView(generics.ListAPIView):
     """
     List all bookings where the authenticated user is the assigned worker (Tier 1-4).
-    Query param ?status=Active|Completed|Cancelled.
+    Query param ?status=Active|Pending|Completed|Cancelled.
     """
     permission_classes = [IsAuthenticated]
     serializer_class = BookingDetailSerializer
@@ -432,7 +434,9 @@ class MyAssignedBookingsView(generics.ListAPIView):
 
         status_param = self.request.query_params.get('status', '').strip().lower()
         if status_param == 'active':
-            qs = qs.filter(booking_status__in=['Pending', 'Accepted', 'InProgress'])
+            qs = qs.filter(booking_status__in=['Accepted', 'InProgress'])
+        elif status_param == 'pending':
+            qs = qs.filter(booking_status='Pending')
         elif status_param == 'completed':
             qs = qs.filter(booking_status='Completed')
         elif status_param == 'cancelled':

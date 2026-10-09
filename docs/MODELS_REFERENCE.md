@@ -40,6 +40,8 @@ This document outlines the database schema, models, field types, and choices (en
 | `contact_number` | `CharField` | Unique |
 | `show_contact_number` | `BooleanField` | - |
 | `is_on_job` | `BooleanField` | - |
+| `cancellation_strikes` | `IntegerField` | - |
+| `is_restricted` | `BooleanField` | - |
 | `user_about` | `TextField` | Blank=True |
 | `user_tags` | `JSONField` | Blank=True |
 | `social_links` | `JSONField` | Blank=True |
