@@ -150,6 +150,16 @@ This document outlines the database schema, models, field types, and choices (en
 | `status` | `CharField` | Choices: ['Pending', 'Accepted', 'Rejected', 'Withdrawn'] |
 | `createdAt` | `DateTimeField` | Blank=True |
 
+### `tbl_saved_post`
+- **Database Table:** `tbl_saved_post`
+
+| Field Name | Data Type | Constraints / Choices / FK |
+| --- | --- | --- |
+| `saved_id` | `UUIDField` | Primary Key, Unique |
+| `user` | `ForeignKey` | FK -> `tbl_user_profile` |
+| `booking` | `ForeignKey` | FK -> `tbl_booking` |
+| `created_at` | `DateTimeField` | Blank=True |
+
 ## Reviews App
 
 ### `tbl_review`

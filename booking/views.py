@@ -10,9 +10,10 @@ from .serializers import (
     BookingSerializer,
     BookingFeedSerializer,
     BookingDetailSerializer,
-    BookingProposalSerializer
+    BookingProposalSerializer,
+    SavedPostItemSerializer
 )
-from .models import tbl_booking, tbl_booking_assignment, tbl_booking_proposal
+from .models import tbl_booking, tbl_booking_assignment, tbl_booking_proposal, tbl_saved_post
 from reviews.models import tbl_review
 from django.core.cache import cache
 from django.db.models import Q, Avg
@@ -755,4 +756,76 @@ class BookingMinimumWageView(APIView):
             )
         address = str(request.query_params.get('address', '') or '').strip()
         info = get_minimum_wage_info(booking_type, address)
-        return Response(info, status=status.HTTP_200_OK)
+        return Response(info, status=status.HTTP_200_OK)
+
+
+class BookingSaveToggleView(APIView):
+    """
+    Toggles saving / bookmarking a booking post for the authenticated user.
+    POST /api/v1/booking/save/
+    Body: {"booking_id": "<uuid>"}
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        booking_id = request.data.get('booking_id')
+        if not booking_id:
+            return Response(
+                {"detail": "booking_id is required."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if not check_valid_uuid(str(booking_id)):
+            return Response(
+                {"detail": "Invalid booking_id format. Must be a valid UUID."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            booking = tbl_booking.objects.get(booking_id=booking_id)
+        except tbl_booking.DoesNotExist:
+            return Response(
+                {"detail": "Booking post not found."},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        saved_record = tbl_saved_post.objects.filter(user=request.user, booking=booking).first()
+        if saved_record:
+            saved_record.delete()
+            return Response({
+                "message": "Post removed from saved",
+                "is_saved": False,
+                "booking_id": str(booking.booking_id)
+            }, status=status.HTTP_200_OK)
+        else:
+            tbl_saved_post.objects.create(user=request.user, booking=booking)
+            return Response({
+                "message": "Post saved successfully",
+                "is_saved": True,
+                "booking_id": str(booking.booking_id)
+            }, status=status.HTTP_200_OK)
+
+
+class SavedBookingListView(APIView):
+    """
+    Retrieves all saved posts for the authenticated user.
+    GET /api/v1/booking/saved/
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        saved_qs = tbl_saved_post.objects.filter(
+            user=request.user
+        ).select_related(
+            'booking', 'booking__poster_id'
+        ).order_by('-created_at')
+
+        results = []
+        for item in saved_qs:
+            if item.booking:
+                serialized = SavedPostItemSerializer(item).data
+                if serialized:
+                    results.append(serialized)
+
+        return Response(results, status=status.HTTP_200_OK)
+

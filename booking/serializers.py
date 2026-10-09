@@ -1,6 +1,6 @@
 from rest_framework import serializers
 from decimal import Decimal
-from .models import tbl_booking, tbl_booking_assignment, tbl_booking_proposal
+from .models import tbl_booking, tbl_booking_assignment, tbl_booking_proposal, tbl_saved_post
 from .wage_policy import get_minimum_daily_wage, get_monthly_equivalent
 from django.utils import timezone
 from reviews.models import tbl_review
@@ -291,3 +291,25 @@ class BookingProposalSerializer(serializers.ModelSerializer):
     def get_proposer_rating(self, obj):
         avg_rating = tbl_review.objects.filter(reviewee_id=obj.proposer_id).aggregate(avg=Avg('rating'))['avg']
         return round(float(avg_rating), 1) if avg_rating is not None else 5.0
+
+
+class SavedPostItemSerializer(serializers.ModelSerializer):
+    """
+    Serializes a tbl_saved_post record with full embedded booking details 
+    formatted to match the mobile feed directly.
+    """
+    saved_id = serializers.UUIDField(read_only=True)
+    saved_at = serializers.DateTimeField(source='created_at', read_only=True)
+    booking = BookingFeedSerializer(read_only=True)
+
+    class Meta:
+        model = tbl_saved_post
+        fields = ['saved_id', 'saved_at', 'booking']
+
+    def to_representation(self, instance):
+        if not instance.booking:
+            return None
+        data = BookingFeedSerializer(instance.booking).data
+        data['saved_id'] = str(instance.saved_id)
+        data['saved_at'] = instance.created_at.isoformat()
+        return data

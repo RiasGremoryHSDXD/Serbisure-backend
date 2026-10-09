@@ -266,4 +266,32 @@ class tbl_booking_proposal(models.Model):
                 condition=Q(proposed_rate__gte=Decimal('1.00')),
                 name='valid_proposal_rate'
             )
-        ]
+        ]
+
+
+class tbl_saved_post(models.Model):
+    saved_id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='saved_posts',
+        db_column='user_id'
+    )
+    booking = models.ForeignKey(
+        'tbl_booking',
+        on_delete=models.CASCADE,
+        related_name='saved_by_users',
+        db_column='booking_id'
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'tbl_saved_post'
+        constraints = [
+            models.UniqueConstraint(fields=['user', 'booking'], name='unique_user_saved_booking')
+        ]
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"User {self.user_id} saved {self.booking_id}"
+
