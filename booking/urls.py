@@ -2,6 +2,7 @@ from django.urls import path
 from .views import (
     BookingView,
     BookingFeedView,
+    PublicPendingPostsView,
     BookingDetailView,
     BookingAcceptView,
     BookingStartView,
@@ -21,6 +22,7 @@ from .views import (
 urlpatterns = [
     path('post/', BookingView.as_view(), name='booking-post'),
     path('feed/', BookingFeedView.as_view(), name='booking-feed'),
+    path('profile/<uuid:user_id>/pending/', PublicPendingPostsView.as_view(), name='booking-profile-pending'),
     path('mine/', MyBookingsView.as_view(), name='booking-mine'),
     path('assigned/', MyAssignedBookingsView.as_view(), name='booking-assigned'),
     path('recommendations/', BookingRecommendationsView.as_view(), name='booking-recommendations'),

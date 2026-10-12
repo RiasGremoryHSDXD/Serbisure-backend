@@ -9,6 +9,7 @@ from rest_framework.views import APIView
 from .serializers import (
     BookingSerializer,
     BookingFeedSerializer,
+    PublicPendingPostSerializer,
     BookingDetailSerializer,
     BookingProposalSerializer,
     SavedPostItemSerializer
@@ -16,7 +17,7 @@ from .serializers import (
 from .models import tbl_booking, tbl_booking_assignment, tbl_booking_proposal, tbl_saved_post
 from reviews.models import tbl_review
 from django.core.cache import cache
-from django.db.models import Q, Avg
+from django.db.models import Q, Avg, Prefetch
 from decimal import Decimal, InvalidOperation
 from django.contrib.auth import get_user_model
 from notifications.services import send_in_app_notification
@@ -206,6 +207,28 @@ class BookingFeedView(generics.ListAPIView):
             queryset = queryset.order_by('-createdAt')
 
         return queryset
+
+
+class PublicPendingPostsView(generics.ListAPIView):
+    """Open posts by one active profile, with only the viewer's latest proposal."""
+    permission_classes = [IsAuthenticated]
+    serializer_class = PublicPendingPostSerializer
+    pagination_class = None
+
+    def get_queryset(self):
+        poster_id = self.kwargs['user_id']
+        if not User.objects.filter(id=poster_id, is_active=True,
+                                   account_type__in=['Homeowner', 'Kasambahay']).exists():
+            raise NotFound('Profile not found.')
+        return tbl_booking.objects.filter(
+            poster_id=poster_id, booking_status='Pending'
+        ).select_related('poster_id').prefetch_related(Prefetch(
+            'proposals',
+            queryset=tbl_booking_proposal.objects.filter(
+                proposer_id=self.request.user
+            ).order_by('-createdAt'),
+            to_attr='viewer_proposals',
+        )).order_by('-createdAt')
 
 
 class BookingDetailView(generics.RetrieveAPIView):
@@ -515,10 +538,11 @@ class BookingProposalCreateView(APIView):
 
         # Notify poster
         proposer_name = f"{request.user.first_name} {request.user.last_name}".strip() or request.user.username
+        proposal_action = 'applied for your job' if booking.poster_id.account_type == 'Homeowner' else 'sent a hiring offer for your service'
         send_in_app_notification(
             receiver=booking.poster_id,
             sender=request.user,
-            message=f"{proposer_name} offered a counter-rate of P{rate_val} for your booking."
+            message=f"{proposer_name} {proposal_action} at P{rate_val}/day. Review the proposal in your pending posts."
         )
 
         return Response({

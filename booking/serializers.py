@@ -168,6 +168,20 @@ class BookingFeedSerializer(serializers.ModelSerializer):
         return get_signed_avatar(obj.poster_id)
 
 
+class PublicPendingPostSerializer(BookingFeedSerializer):
+    viewer_proposal = serializers.SerializerMethodField()
+
+    class Meta(BookingFeedSerializer.Meta):
+        fields = BookingFeedSerializer.Meta.fields + ['viewer_proposal']
+
+    def get_viewer_proposal(self, obj):
+        proposals = getattr(obj, 'viewer_proposals', [])
+        if not proposals:
+            return None
+        proposal = proposals[0]
+        return {'proposal_id': str(proposal.proposal_id), 'status': proposal.status}
+
+
 class BookingDetailSerializer(serializers.ModelSerializer):
     poster = serializers.SerializerMethodField()
     assigned_partner = serializers.SerializerMethodField()
