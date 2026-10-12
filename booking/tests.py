@@ -49,7 +49,7 @@ class BookingTests(APITestCase):
 
     def get_valid_payload(self):
         return {
-            "booking_type": "short_term",
+            "booking_type": "short_term", 'work_setup': 'stay_out', 'rate_period': 'day',
             "service_category": ["Cleaning"],
             "region": "Region X - Northern Mindanao",
             "province": "Misamis Oriental",
@@ -57,7 +57,7 @@ class BookingTests(APITestCase):
             "barangay": "Macasandig",
             "street": "123 Test St",
             "zip_code": "9000",
-            "daily_rate": "500.00",
+            "rate_amount": "800.00",
             "special_instruction": "Please be careful with the vase.",
             "start_time": self.future_start.isoformat(),
             "end_time": self.future_end.isoformat()
@@ -173,60 +173,54 @@ class BookingTests(APITestCase):
     def test_long_term_booking_below_minimum_wage_rejected(self):
         """
         GIVEN a long_term booking in Cagayan de Oro (Region X)
-        WHEN daily_rate is below statutory minimum wage (₱250.00 / day)
+        WHEN rate_amount is below statutory minimum wage (₱6,500.00 / month)
         THEN serializer must reject with HTTP 400 mentioning Batas Kasambahay (RA 10361).
         """
         self.client.force_authenticate(user=self.verified_user)
         headers = {'HTTP_IDEMPOTENCY_KEY': str(uuid.uuid4())}
         payload = self.get_valid_payload()
         payload['booking_type'] = 'long_term'
+        payload['rate_period'] = 'month'
         payload['region'] = 'Region X - Northern Mindanao'
         payload['province'] = 'Misamis Oriental'
         payload['city'] = 'Cagayan de Oro'
         payload['barangay'] = 'Macasandig'
         payload['street'] = '123 Test St'
-        payload['daily_rate'] = '150.00'  # Below ₱250 statutory floor
+        payload['rate_amount'] = '6499.00'  # Below the monthly Region X floor
 
         response = self.client.post(self.url, payload, format='json', **headers)
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("daily_rate", response.data)
-        self.assertIn("Batas Kasambahay", str(response.data["daily_rate"]))
+        self.assertIn("rate_amount", response.data)
+        self.assertIn("RBX-DW-06", str(response.data["rate_amount"]))
 
     def test_long_term_booking_at_minimum_wage_accepted(self):
         """
         GIVEN a long_term booking in Cagayan de Oro (Region X)
-        WHEN daily_rate meets statutory minimum wage (₱250.00 / day)
+        WHEN rate_amount meets statutory minimum wage (₱6,500.00 / month)
         THEN booking creation must succeed with HTTP 201.
         """
         self.client.force_authenticate(user=self.verified_user)
         headers = {'HTTP_IDEMPOTENCY_KEY': str(uuid.uuid4())}
         payload = self.get_valid_payload()
         payload['booking_type'] = 'long_term'
+        payload['rate_period'] = 'month'
         payload['region'] = 'Region X - Northern Mindanao'
         payload['province'] = 'Misamis Oriental'
         payload['city'] = 'Cagayan de Oro'
         payload['barangay'] = 'Macasandig'
         payload['street'] = '123 Test St'
-        payload['daily_rate'] = '250.00'
+        payload['rate_amount'] = '6500.00'
 
         response = self.client.post(self.url, payload, format='json', **headers)
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
 
-    def test_short_term_booking_below_250_accepted(self):
-        """
-        GIVEN a short_term booking (occasional/task-based work)
-        WHEN daily_rate is below ₱250.00 (e.g. ₱150.00)
-        THEN booking creation succeeds because short-term work is legally exempt under RA 10361 Sec 4(d).
-        """
+    def test_short_term_booking_below_platform_minimum_rejected(self):
         self.client.force_authenticate(user=self.verified_user)
-        headers = {'HTTP_IDEMPOTENCY_KEY': str(uuid.uuid4())}
         payload = self.get_valid_payload()
-        payload['booking_type'] = 'short_term'
-        payload['daily_rate'] = '150.00'
-
-        response = self.client.post(self.url, payload, format='json', **headers)
-        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
-
+        payload['rate_amount'] = '599.00'
+        response = self.client.post(self.url, payload, format='json', HTTP_IDEMPOTENCY_KEY=str(uuid.uuid4()))
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('rate_amount', response.data)
 
 
 class BookingFeedFilterTests(APITestCase):
@@ -258,7 +252,7 @@ class BookingFeedFilterTests(APITestCase):
         # Create bookings posted by Kasambahay (visible to Homeowner)
         self.k_job1 = tbl_booking.objects.create(
             poster_id=self.kasambahay,
-            booking_type='short_term',
+            booking_type='short_term', rate_period='day',
             booking_status='Pending',
             service_category=['Cleaning'],
             start_time=now + datetime.timedelta(days=1),
@@ -267,12 +261,12 @@ class BookingFeedFilterTests(APITestCase):
             city='Cagayan de Oro',
             barangay='Carmen',
             street='Barangay Carmen',
-            daily_rate=500.00
+            rate_amount=800.00
         )
 
         self.k_job2 = tbl_booking.objects.create(
             poster_id=self.kasambahay,
-            booking_type='long_term',
+            booking_type='long_term', rate_period='month',
             booking_status='Pending',
             service_category=['Cooking', 'Caregiver'],
             start_time=now + datetime.timedelta(days=2),
@@ -281,7 +275,7 @@ class BookingFeedFilterTests(APITestCase):
             city='Cagayan de Oro',
             barangay='Nazareth',
             street='Nazareth',
-            daily_rate=1200.00
+            rate_amount=12000.00
         )
 
     def tearDown(self):
@@ -303,7 +297,7 @@ class BookingFeedFilterTests(APITestCase):
 
     def test_feed_max_rate_filter(self):
         self.client.force_authenticate(user=self.homeowner)
-        res = self.client.get(f"{self.feed_url}?max_rate=600")
+        res = self.client.get(f"{self.feed_url}?max_rate=1000&rate_period=day")
         self.assertEqual(res.status_code, status.HTTP_200_OK)
         self.assertEqual(len(res.data), 1)
         self.assertEqual(res.data[0]['booking_id'], str(self.k_job1.booking_id))
@@ -317,11 +311,13 @@ class BookingFeedFilterTests(APITestCase):
 
     def test_feed_sort_rate(self):
         self.client.force_authenticate(user=self.homeowner)
-        res = self.client.get(f"{self.feed_url}?sort=rate_asc")
+        res = self.client.get(f"{self.feed_url}?sort=rate_asc&rate_period=day")
         self.assertEqual(res.status_code, status.HTTP_200_OK)
-        self.assertEqual(len(res.data), 2)
-        self.assertEqual(float(res.data[0]['daily_rate']), 500.00)
-        self.assertEqual(float(res.data[1]['daily_rate']), 1200.00)
+        self.assertEqual(len(res.data), 1)
+        self.assertEqual(float(res.data[0]['rate_amount']), 800.00)
+        monthly = self.client.get(f"{self.feed_url}?sort=rate_asc&rate_period=month")
+        self.assertEqual(len(monthly.data), 1)
+        self.assertEqual(float(monthly.data[0]['rate_amount']), 12000.00)
 
 
 class BookingLifecycleAndProposalTests(APITestCase):
@@ -352,7 +348,7 @@ class BookingLifecycleAndProposalTests(APITestCase):
 
         self.booking = tbl_booking.objects.create(
             poster_id=self.homeowner,
-            booking_type='short_term',
+            booking_type='short_term', rate_period='day',
             booking_status='Pending',
             service_category=['Cleaning'],
             start_time=now + datetime.timedelta(days=1),
@@ -361,7 +357,7 @@ class BookingLifecycleAndProposalTests(APITestCase):
             city='Cagayan de Oro',
             barangay='Carmen',
             street='Barangay Carmen',
-            daily_rate=500.00
+            rate_amount=800.00
         )
 
     def tearDown(self):
@@ -380,6 +376,9 @@ class BookingLifecycleAndProposalTests(APITestCase):
         self.client.force_authenticate(user=self.kasambahay)
         # 1. Accept
         self.client.patch(reverse('booking-accept', kwargs={'booking_id': self.booking.booking_id}))
+        # Simulate the agreed work time arriving after acceptance.
+        self.booking.start_time = timezone.now() - datetime.timedelta(minutes=1)
+        self.booking.save(update_fields=['start_time'])
         # 2. Start
         start_res = self.client.patch(reverse('booking-start', kwargs={'booking_id': self.booking.booking_id}))
         self.assertEqual(start_res.status_code, status.HTTP_200_OK)
@@ -409,7 +408,7 @@ class BookingLifecycleAndProposalTests(APITestCase):
         self.client.force_authenticate(user=self.kasambahay)
         # 1. Submit proposal
         prop_url = reverse('booking-proposals-create', kwargs={'booking_id': self.booking.booking_id})
-        res = self.client.post(prop_url, {'proposed_rate': '650.00', 'message': 'Can I request 650 for travel?'}, format='json')
+        res = self.client.post(prop_url, {'proposed_rate': '650.00', 'rate_period': 'day', 'message': 'Can I request 650 for travel?'}, format='json')
         self.assertEqual(res.status_code, status.HTTP_201_CREATED)
         prop_id = res.data['proposal']['proposal_id']
 
@@ -420,7 +419,7 @@ class BookingLifecycleAndProposalTests(APITestCase):
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
         self.booking.refresh_from_db()
         self.assertEqual(self.booking.booking_status, 'Accepted')
-        self.assertEqual(float(self.booking.daily_rate), 650.00)
+        self.assertEqual(float(self.booking.rate_amount), 650.00)
 
     def test_recommendations(self):
         self.client.force_authenticate(user=self.kasambahay)
@@ -430,14 +429,14 @@ class BookingLifecycleAndProposalTests(APITestCase):
 
     def test_long_term_proposal_below_minimum_wage_rejected(self):
         """
-        GIVEN an existing long_term booking in Cagayan de Oro (min wage ₱250.00)
+        GIVEN an existing long_term booking in Cagayan de Oro (minimum ₱6,500.00/month)
         WHEN a proposal offers below ₱250.00 (e.g. ₱180.00)
         THEN proposal must be rejected with HTTP 400 citing Batas Kasambahay minimum wage.
         """
         now = timezone.now()
         long_booking = tbl_booking.objects.create(
             poster_id=self.homeowner,
-            booking_type='long_term',
+            booking_type='long_term', rate_period='month',
             booking_status='Pending',
             service_category=['Cleaning'],
             start_time=now + datetime.timedelta(days=1),
@@ -446,24 +445,24 @@ class BookingLifecycleAndProposalTests(APITestCase):
             city='Cagayan de Oro',
             barangay='Macasandig',
             street='Macasandig',
-            daily_rate=300.00
+            rate_amount=6500.00
         )
         self.client.force_authenticate(user=self.kasambahay)
         prop_url = reverse('booking-proposals-create', kwargs={'booking_id': long_booking.booking_id})
-        res = self.client.post(prop_url, {'proposed_rate': '180.00', 'message': 'Discounted rate'}, format='json')
+        res = self.client.post(prop_url, {'proposed_rate': '6499.00', 'rate_period': 'month', 'message': 'Discounted rate'}, format='json')
         self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("minimum wage", res.data.get('error', '').lower())
+        self.assertIn('proposed_rate', res.data)
 
     def test_long_term_proposal_at_or_above_minimum_wage_accepted(self):
         """
         GIVEN an existing long_term booking
-        WHEN a proposal offers at or above statutory minimum wage (₱250.00)
+        WHEN a proposal offers at or above statutory minimum wage (₱6,500.00/month)
         THEN proposal creation succeeds with HTTP 201.
         """
         now = timezone.now()
         long_booking = tbl_booking.objects.create(
             poster_id=self.homeowner,
-            booking_type='long_term',
+            booking_type='long_term', rate_period='month',
             booking_status='Pending',
             service_category=['Cleaning'],
             start_time=now + datetime.timedelta(days=1),
@@ -472,11 +471,11 @@ class BookingLifecycleAndProposalTests(APITestCase):
             city='Cagayan de Oro',
             barangay='Macasandig',
             street='Macasandig',
-            daily_rate=300.00
+            rate_amount=6500.00
         )
         self.client.force_authenticate(user=self.kasambahay)
         prop_url = reverse('booking-proposals-create', kwargs={'booking_id': long_booking.booking_id})
-        res = self.client.post(prop_url, {'proposed_rate': '250.00', 'message': 'Standard rate'}, format='json')
+        res = self.client.post(prop_url, {'proposed_rate': '6500.00', 'rate_period': 'month', 'message': 'Standard rate'}, format='json')
         self.assertEqual(res.status_code, status.HTTP_201_CREATED)
 
 
@@ -488,28 +487,28 @@ class BookingMinimumWageEndpointTests(APITestCase):
         res = self.client.get(f"{self.url}?booking_type=long_term&address=Cagayan+de+Oro")
         self.assertEqual(res.status_code, status.HTTP_200_OK)
         self.assertEqual(res.data['booking_type'], 'long_term')
-        self.assertEqual(res.data['min_daily_rate'], '250.00')
+        self.assertIsNone(res.data['min_daily_rate'])
         self.assertEqual(res.data['min_monthly_rate'], '6500.00')
-        self.assertEqual(res.data['working_days_per_month'], 26)
+        self.assertEqual(res.data['rate_period'], 'month')
         self.assertTrue(res.data['is_statutory_mandatory'])
-        self.assertIn('Region X', res.data['wage_order'])
+        self.assertEqual(res.data['wage_order'], 'RBX-DW-06')
 
     def test_get_long_term_wage_info_ncr(self):
         res = self.client.get(f"{self.url}?booking_type=long_term&address=Quezon+City,+Metro+Manila")
         self.assertEqual(res.status_code, status.HTTP_200_OK)
         self.assertEqual(res.data['booking_type'], 'long_term')
-        self.assertEqual(res.data['min_daily_rate'], '300.00')
+        self.assertIsNone(res.data['min_daily_rate'])
         self.assertEqual(res.data['min_monthly_rate'], '7800.00')
         self.assertTrue(res.data['is_statutory_mandatory'])
         self.assertIn('NCR', res.data['wage_order'])
 
-    def test_get_short_term_wage_info_exempt(self):
+    def test_get_short_term_platform_minimum(self):
         res = self.client.get(f"{self.url}?booking_type=short_term")
         self.assertEqual(res.status_code, status.HTTP_200_OK)
         self.assertEqual(res.data['booking_type'], 'short_term')
-        self.assertEqual(res.data['min_daily_rate'], '1.00')
+        self.assertEqual(res.data['min_daily_rate'], '600.00')
         self.assertFalse(res.data['is_statutory_mandatory'])
-        self.assertIn('recommended_market_range', res.data)
+        self.assertIn('platform minimum', res.data['description'])
 
 
 

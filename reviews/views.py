@@ -3,11 +3,12 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.throttling import UserRateThrottle
 from rest_framework.exceptions import Throttled, NotFound
 from rest_framework.response import Response
-from django.core.cache import cache
 from django.contrib.auth import get_user_model
+from django.db import transaction
 from django.db.models import Avg
 from core.utils import check_valid_uuid, get_signed_cloudinary_url
 from .models import tbl_review
+from .sentiment import analyze_feedback, SentimentUnavailable
 from .serializers import (
     CreateReviewSerializer,
     ReviewSerializer,
@@ -58,6 +59,16 @@ class CreateReviewView(generics.CreateAPIView):
     throttle_classes = [CreateReviewThrottle]
     serializer_class = CreateReviewSerializer
 
+    def replay(self, request, key):
+        review = tbl_review.objects.filter(reviewer_id=request.user, submission_key=key).first()
+        if review is None:
+            return None
+        if (str(review.booking_id_id) != str(request.data.get('booking_id'))
+                or str(review.rating) != str(request.data.get('rating'))
+                or review.unstructured_feedback != str(request.data.get('unstructured_feedback', '')).strip()):
+            return Response({'detail': 'This submission key was already used for a different review.'}, status=400)
+        return Response({'message': 'Review submitted successfully.', 'data': ReviewSerializer(review).data}, status=200)
+
     def create(self, request, *args, **kwargs):
         # Step 1: Verification guard
         if getattr(request.user, 'verification_status', None) != "Verified":
@@ -74,16 +85,30 @@ class CreateReviewView(generics.CreateAPIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # Step 3: Check cache — prevent duplicate on network retry
-        cache_key = f'review_create_{idempotency_key}'
-        cached_response = cache.get(cache_key)
-        if cached_response:
-            return Response(cached_response['data'], status=cached_response['status'])
-
-        # Step 4: Validate and save review
+        # Durable, reviewer-scoped replay survives process restarts and network retries.
+        replay = self.replay(request, idempotency_key)
+        if replay is not None:
+            return replay
         serializer = self.get_serializer(data=request.data, context={'request': request})
         serializer.is_valid(raise_exception=True)
-        review = serializer.save()
+        try:
+            analysis = analyze_feedback(serializer.validated_data['unstructured_feedback'])
+        except SentimentUnavailable:
+            return Response({
+                'detail': 'We could not analyze your feedback right now. Your review has not been submitted. Please try again.',
+                'code': 'sentiment_unavailable', 'retryable': True,
+            }, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+        # Never hold a database lock while waiting on the external model.
+        with transaction.atomic():
+            User.objects.select_for_update().get(pk=request.user.pk)
+            replay = self.replay(request, idempotency_key)
+            if replay is not None:
+                return replay
+            serializer = self.get_serializer(data=request.data, context={'request': request})
+            serializer.is_valid(raise_exception=True)
+            review = serializer.save(nlp_sentiment=analysis['label'], sentiment_analysis=analysis,
+                                     submission_key=idempotency_key)
 
         # In-App Notification Trigger (Tier 1-3)
         try:
@@ -102,13 +127,6 @@ class CreateReviewView(generics.CreateAPIView):
             "data": ReviewSerializer(review).data
         }
         response_status = status.HTTP_201_CREATED
-
-        # Step 7: Cache the success response for 24 hours
-        cache.set(
-            cache_key,
-            {'data': response_data, 'status': response_status},
-            timeout=86400  # 24 hours
-        )
 
         return Response(response_data, status=response_status)
 

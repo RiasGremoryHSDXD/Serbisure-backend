@@ -49,6 +49,10 @@ class SendMessageSerializer(serializers.ModelSerializer):
         if request and receiver and request.user == receiver:
             raise serializers.ValidationError({"receiver_id": "You cannot send a message to yourself."})
 
+        booking = attrs.get('booking_id')
+        if booking and booking.recipient_id_id and (not request or
+                {request.user.pk, receiver.pk} != {booking.poster_id_id, booking.recipient_id_id}):
+            raise serializers.ValidationError({'booking_id': 'Private booking terms are only available to their participants.'})
         return attrs
 
 
@@ -145,6 +149,11 @@ class SendImageMessageSerializer(serializers.ModelSerializer):
         if request and receiver and request.user == receiver:
             raise serializers.ValidationError({"receiver_id": "You cannot send a message to yourself."})
 
+        booking = attrs.get('booking_id')
+        if booking and booking.recipient_id_id and (not request or
+                {request.user.pk, receiver.pk} != {booking.poster_id_id, booking.recipient_id_id}):
+            raise serializers.ValidationError({'booking_id': 'Private booking terms are only available to their participants.'})
+
         return attrs
 
 
@@ -182,6 +191,7 @@ class ChatMessageSerializer(serializers.ModelSerializer):
     Includes sender indicator, image signed URL, reaction summary, and personal reaction.
     """
     is_sender = serializers.SerializerMethodField()
+    booking_offer = serializers.SerializerMethodField()
     image_url = serializers.SerializerMethodField()
     reaction_summary = serializers.SerializerMethodField()
     my_reaction = serializers.SerializerMethodField()
@@ -199,10 +209,35 @@ class ChatMessageSerializer(serializers.ModelSerializer):
             'message_payload',
             'is_read',
             'is_sender',
+            'booking_offer',
             'reaction_summary',
             'my_reaction',
             'createdAt'
         ]
+
+    def get_booking_offer(self, obj):
+        if not obj.is_booking_offer or not obj.booking_id:
+            return None
+        request = self.context.get('request')
+        if not request or request.user.pk not in (obj.sender_id_id, obj.receiver_id_id):
+            return None
+        from booking.serializers import BookingDetailSerializer
+        booking = obj.booking_id
+        proposal = obj.booking_proposal
+        assignment = booking.assignments.first()
+        pair = {obj.sender_id_id, obj.receiver_id_id}
+        confirmed = (booking.booking_status in ('Accepted', 'InProgress', 'Completed')
+                     and assignment is not None and {booking.poster_id_id, assignment.accepter_id_id} == pair
+                     and (proposal is None or proposal.status == 'Accepted'))
+        can_respond = booking.booking_status == 'Pending' and (
+            (proposal is not None and proposal.status == 'Pending' and request.user.pk == booking.poster_id_id)
+            or (proposal is None and request.user.pk == booking.recipient_id_id))
+        return {'booking': BookingDetailSerializer(booking, context={'request': request}).data,
+                'proposal_id': str(proposal.pk) if proposal else None,
+                'proposed_rate': str(proposal.proposed_rate) if proposal else None,
+                'status': 'Confirmed' if confirmed else proposal.status if proposal else booking.booking_status,
+                'can_respond': can_respond,
+                'sender_name': (obj.sender_id.first_name + ' ' + obj.sender_id.last_name).strip() or obj.sender_id.username}
 
     def get_is_sender(self, obj):
         request = self.context.get('request')

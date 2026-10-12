@@ -26,8 +26,8 @@ class PublicProfilePostsTests(APITestCase):
 
     def create_post(self, poster, **kwargs):
         return tbl_booking.objects.create(
-            poster_id=poster, booking_type='short_term', service_category=['Cleaning'],
-            start_time=timezone.now() + datetime.timedelta(days=1), daily_rate='500.00',
+            poster_id=poster, booking_type='short_term', rate_period='day', service_category=['Cleaning'],
+            start_time=timezone.now() + datetime.timedelta(days=1), rate_amount='600.00',
             city='Cagayan de Oro', barangay='Macasandig', **kwargs,
         )
 
@@ -42,7 +42,7 @@ class PublicProfilePostsTests(APITestCase):
         self.assertNotIn('email', response.data[0])
 
     def test_only_viewers_own_proposal_is_returned(self):
-        own = tbl_booking_proposal.objects.create(booking_id=self.post, proposer_id=self.worker, proposed_rate='500.00')
+        own = tbl_booking_proposal.objects.create(booking_id=self.post, proposer_id=self.worker, proposed_rate='600.00')
         tbl_booking_proposal.objects.create(booking_id=self.post, proposer_id=self.owner, proposed_rate='700.00')
         response = self.client.get(self.url)
         self.assertEqual(response.data[0]['viewer_proposal'], {'proposal_id': str(own.proposal_id), 'status': 'Pending'})
@@ -62,19 +62,19 @@ class PublicProfilePostsTests(APITestCase):
 
     def test_application_notifies_owner_and_keeps_post_pending(self):
         proposal_url = reverse('booking-proposals-create', kwargs={'booking_id': self.post.booking_id})
-        response = self.client.post(proposal_url, {'proposed_rate': '500.00', 'message': 'Job application: I am interested.'}, format='json')
+        response = self.client.post(proposal_url, {'proposed_rate': '600.00', 'rate_period': 'day', 'message': 'Job application: I am interested.'}, format='json')
         self.assertEqual(response.status_code, 201)
         self.post.refresh_from_db()
         self.assertEqual(self.post.booking_status, 'Pending')
         notice = tbl_notification.objects.get(receiver_id=self.owner, sender_id=self.worker)
         self.assertIn('applied for your job', notice.notification_message)
         self.assertEqual(self.client.get(self.url).data[0]['viewer_proposal']['status'], 'Pending')
-        self.assertEqual(self.client.post(proposal_url, {'proposed_rate': '500.00'}, format='json').status_code, 400)
+        self.assertEqual(self.client.post(proposal_url, {'proposed_rate': '600.00', 'rate_period': 'day'}, format='json').status_code, 400)
 
     def test_hiring_offer_notifies_worker_and_leaves_service_pending(self):
         service = self.create_post(self.worker)
         self.client.force_authenticate(self.owner)
-        response = self.client.post(reverse('booking-proposals-create', kwargs={'booking_id': service.booking_id}), {'proposed_rate': '600.00', 'message': 'Hiring offer: Help with cleaning.'}, format='json')
+        response = self.client.post(reverse('booking-proposals-create', kwargs={'booking_id': service.booking_id}), {'proposed_rate': '600.00', 'rate_period': 'day', 'message': 'Hiring offer: Help with cleaning.'}, format='json')
         self.assertEqual(response.status_code, 201)
         service.refresh_from_db()
         self.assertEqual(service.booking_status, 'Pending')

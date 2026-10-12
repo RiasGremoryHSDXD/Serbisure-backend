@@ -520,25 +520,24 @@ class AdminDashboardActivityView(APIView):
                 worker_name = accepter_name or 'Unassigned'
                 worker_avatar = accepter_avatar or unassigned_avatar
 
-            # RA 10361 compliance checks
-            # Minimum wage baseline: ₱5,000/mo for CDO Kasambahay
-            MIN_WAGE = 5000.0
-            daily_rate = float(booking.daily_rate)
-            # Estimate monthly from daily_rate * 26 working days
-            monthly_estimate = daily_rate * 26
-            is_below_min = monthly_estimate < MIN_WAGE
-
-            # Short-term capping: count all short_term bookings by same poster
-            short_term_count = tbl_booking.objects.filter(
-                poster_id=poster,
-                booking_type='short_term',
-                booking_status__in=['Accepted', 'InProgress', 'Completed']
-            ).count()
+            from booking.wage_policy import get_minimum_wage_info
+            from booking.services import pair_booking_count
+            from rest_framework.exceptions import ValidationError
+            try:
+                policy = get_minimum_wage_info(booking.booking_type, booking.full_address, booking.region)
+                minimum = float(policy['minimum_rate'])
+            except ValidationError:
+                minimum = None
+            amount = float(booking.rate_amount)
+            needs_review = booking.rate_needs_review or minimum is None
+            is_below_min = minimum is not None and amount < minimum
+            short_term_count = pair_booking_count(poster.pk, assignment.accepter_id_id, booking.start_time) if assignment else 0
             is_capped = short_term_count >= 3
-
-            if is_below_min:
+            if needs_review:
+                compliance_status = 'REQUIRES_REVIEW'
+            elif is_below_min:
                 compliance_status = 'BELOW_MINIMUM_WAGE'
-            elif is_capped and booking.booking_type == 'short_term':
+            elif short_term_count > 3 and booking.booking_type == 'short_term':
                 compliance_status = 'FLAGGED_THROTTLED'
             else:
                 compliance_status = 'COMPLIANT'
@@ -565,9 +564,12 @@ class AdminDashboardActivityView(APIView):
                 'serviceCategory': ', '.join(booking.service_category),
                 'monthlyBookingsCount': short_term_count,
                 'isCapped': is_capped,
-                'offeredWage': round(monthly_estimate),
-                'dailyRate': daily_rate,
-                'minimumWageBaseline': MIN_WAGE,
+                'offeredWage': amount,
+                'ratePeriod': booking.rate_period,
+                'pairKey': ':'.join(sorted([str(poster.pk), str(assignment.accepter_id_id)])) if assignment else None,
+                'rateNeedsReview': needs_review,
+                'dailyRate': amount if booking.rate_period == 'day' else None,
+                'minimumWageBaseline': minimum,
                 'isBelowMinimumWage': is_below_min,
                 'contractType': contract_type,
                 'bookingType': booking.booking_type,
@@ -1293,13 +1295,13 @@ class ExportUserDataView(APIView):
         from reviews.models import tbl_review
 
         posted_bookings = list(tbl_booking.objects.filter(poster_id=user).values(
-            'booking_id', 'booking_type', 'booking_status', 'service_category', 'daily_rate',
+            'booking_id', 'booking_type', 'booking_status', 'service_category', 'rate_amount', 'rate_period', 'rate_needs_review',
             'street', 'barangay', 'city', 'province', 'region', 'zip_code', 'createdAt'
         ))
         for b in posted_bookings:
             b['booking_id'] = str(b['booking_id'])
             b['createdAt'] = str(b['createdAt'])
-            b['daily_rate'] = str(b['daily_rate'])
+            b['rate_amount'] = str(b['rate_amount'])
             addr_parts = [b.get(k) for k in ['street', 'barangay', 'city', 'province'] if b.get(k)]
             b['full_address'] = ', '.join(addr_parts) if addr_parts else ''
 

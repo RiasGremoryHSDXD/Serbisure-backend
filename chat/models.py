@@ -74,6 +74,10 @@ class tbl_chat_message(models.Model):
         blank=True
     )
 
+    is_booking_offer = models.BooleanField(default=False)
+    booking_proposal = models.ForeignKey('booking.tbl_booking_proposal', on_delete=models.SET_NULL,
+        null=True, blank=True, related_name='offer_messages')
+
     message_type = models.CharField(
         max_length=10,
         choices=MESSAGE_TYPE_CHOICES,

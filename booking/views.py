@@ -21,7 +21,11 @@ from django.db.models import Q, Avg, Prefetch
 from decimal import Decimal, InvalidOperation
 from django.contrib.auth import get_user_model
 from notifications.services import send_in_app_notification
-from .wage_policy import get_minimum_daily_wage, get_monthly_equivalent, get_minimum_wage_info
+from .wage_policy import get_minimum_wage_info, validate_rate
+from .services import accept_engagement, create_proposal
+from django.db import transaction
+from django.shortcuts import get_object_or_404
+from django.utils import timezone
 import math 
 
 User = get_user_model()
@@ -38,7 +42,7 @@ class BookingView(generics.CreateAPIView):
     permission_classes = [IsAuthenticated]
 
     def create(self, request, *args, **kwargs):
-        if request.user.verification_status != "Verified":
+        if request.user.account_type not in ("Homeowner", "Kasambahay") or request.user.is_restricted or request.user.verification_status != "Verified":
             return Response({
                 "code": "account_not_verified",
                 "detail": "Account verification is required before posting. Please verify your account to keep our community safe and trusted.",
@@ -50,7 +54,8 @@ class BookingView(generics.CreateAPIView):
             return Response({"detail": "The Idempotency-Key header is required and must be a valid UUID v4."},
                             status=status.HTTP_400_BAD_REQUEST)
 
-        cached_response = cache.get(idempotency_key)
+        cache_key = f'booking_post_{request.user.pk}_{idempotency_key}'
+        cached_response = cache.get(cache_key)
         if cached_response:
             return Response(cached_response['data'], status=cached_response['status'])
         
@@ -66,7 +71,7 @@ class BookingView(generics.CreateAPIView):
 
             if idempotency_key:
                 cache.set(
-                    idempotency_key,
+                    cache_key,
                     {'data': response_data, 'status': response_status},
                     timeout=86400
                 )
@@ -90,7 +95,7 @@ class BookingFeedView(generics.ListAPIView):
 
     def get_queryset(self):
         current_user = self.request.user
-        queryset = tbl_booking.objects.select_related('poster_id').filter(booking_status='Pending')
+        queryset = tbl_booking.objects.select_related('poster_id').filter(booking_status='Pending', rate_needs_review=False, poster_id__is_active=True, recipient_id__isnull=True)
 
         if current_user.account_type == 'Homeowner':
             queryset = queryset.filter(poster_id__account_type='Kasambahay')
@@ -133,21 +138,35 @@ class BookingFeedView(generics.ListAPIView):
             bt_norm = bt_param.lower().replace('-', '_').strip()
             if bt_norm in ['short_term', 'part_time', 'parttime']:
                 queryset = queryset.filter(booking_type='short_term')
-            elif bt_norm in ['long_term', 'stay_in', 'stayin']:
+            elif bt_norm == 'long_term':
                 queryset = queryset.filter(booking_type='long_term')
+            else:
+                raise ValidationError({'booking_type': 'Choose short_term or long_term; filter living setup with work_setup.'})
+
+        setup_param = params.get('work_setup')
+        if setup_param:
+            if setup_param not in ('stay_in', 'stay_out'):
+                raise ValidationError({'work_setup': 'Choose stay_in or stay_out.'})
+            queryset = queryset.filter(work_setup=setup_param)
+
+        if params.get('max_rate') or params.get('min_rate') or params.get('sort') in ['rate_asc', 'rate_desc']:
+            period = params.get('rate_period')
+            if period not in ('day', 'month'):
+                raise ValidationError({'rate_period': 'Choose day or month when filtering or sorting compensation.'})
+            queryset = queryset.filter(rate_period=period)
 
         # 3. Max & Min daily rate
         max_rate = params.get('max_rate')
         if max_rate:
             try:
-                queryset = queryset.filter(daily_rate__lte=Decimal(str(max_rate)))
+                queryset = queryset.filter(rate_amount__lte=Decimal(str(max_rate)))
             except (InvalidOperation, ValueError, TypeError):
                 pass
 
         min_rate = params.get('min_rate')
         if min_rate:
             try:
-                queryset = queryset.filter(daily_rate__gte=Decimal(str(min_rate)))
+                queryset = queryset.filter(rate_amount__gte=Decimal(str(min_rate)))
             except (InvalidOperation, ValueError, TypeError):
                 pass
 
@@ -198,9 +217,9 @@ class BookingFeedView(generics.ListAPIView):
         # 6. Sorting
         sort = params.get('sort', 'newest')
         if sort == 'rate_asc':
-            queryset = queryset.order_by('daily_rate')
+            queryset = queryset.order_by('rate_amount')
         elif sort == 'rate_desc':
-            queryset = queryset.order_by('-daily_rate')
+            queryset = queryset.order_by('-rate_amount')
         elif sort == 'oldest':
             queryset = queryset.order_by('createdAt')
         else:
@@ -221,7 +240,7 @@ class PublicPendingPostsView(generics.ListAPIView):
                                    account_type__in=['Homeowner', 'Kasambahay']).exists():
             raise NotFound('Profile not found.')
         return tbl_booking.objects.filter(
-            poster_id=poster_id, booking_status='Pending'
+            poster_id=poster_id, booking_status='Pending', recipient_id__isnull=True
         ).select_related('poster_id').prefetch_related(Prefetch(
             'proposals',
             queryset=tbl_booking_proposal.objects.filter(
@@ -237,8 +256,12 @@ class BookingDetailView(generics.RetrieveAPIView):
     """
     permission_classes = [IsAuthenticated]
     serializer_class = BookingDetailSerializer
-    queryset = tbl_booking.objects.select_related('poster_id').all()
     lookup_field = 'booking_id'
+
+    def get_queryset(self):
+        user = self.request.user
+        return tbl_booking.objects.select_related('poster_id').filter(
+            Q(recipient_id__isnull=True) | Q(poster_id=user) | Q(recipient_id=user))
 
 
 class BookingAcceptView(APIView):
@@ -252,28 +275,7 @@ class BookingAcceptView(APIView):
     permission_classes = [IsAuthenticated]
 
     def patch(self, request, booking_id):
-        try:
-            booking = tbl_booking.objects.get(booking_id=booking_id)
-        except tbl_booking.DoesNotExist:
-            return Response({'error': 'Booking not found.'}, status=status.HTTP_404_NOT_FOUND)
-
-        if booking.poster_id == request.user:
-            return Response({'error': 'You cannot accept your own booking.'}, status=status.HTTP_400_BAD_REQUEST)
-
-        if booking.booking_status != 'Pending':
-            return Response({'error': f'Booking cannot be accepted because it is already {booking.booking_status}.'},
-                            status=status.HTTP_400_BAD_REQUEST)
-
-        booking.booking_status = 'Accepted'
-        booking.save(update_fields=['booking_status'])
-
-        assignment, _ = tbl_booking_assignment.objects.get_or_create(
-            booking_id=booking,
-            defaults={'accepter_id': request.user}
-        )
-        if assignment.accepter_id != request.user:
-            assignment.accepter_id = request.user
-            assignment.save(update_fields=['accepter_id'])
+        booking, accepter = accept_engagement(booking_id, request.user)
 
         # Send in-app notification to the poster
         accepter_name = f"{request.user.first_name} {request.user.last_name}".strip() or request.user.username
@@ -296,9 +298,10 @@ class BookingStartView(APIView):
     """
     permission_classes = [IsAuthenticated]
 
+    @transaction.atomic
     def patch(self, request, booking_id):
         try:
-            booking = tbl_booking.objects.get(booking_id=booking_id)
+            booking = tbl_booking.objects.select_for_update().get(booking_id=booking_id)
         except tbl_booking.DoesNotExist:
             return Response({'error': 'Booking not found.'}, status=status.HTTP_404_NOT_FOUND)
 
@@ -309,12 +312,16 @@ class BookingStartView(APIView):
         if not (is_poster or is_accepter):
             return Response({'error': 'You are not authorized to update this booking.'}, status=status.HTTP_403_FORBIDDEN)
 
-        if booking.booking_status != 'Accepted':
+        if booking.booking_status != 'Accepted' and not (booking.booking_status == 'InProgress' and booking.started_at is None):
             return Response({'error': f'Booking must be in Accepted status to start. Current: {booking.booking_status}.'},
                             status=status.HTTP_400_BAD_REQUEST)
 
+        if timezone.now() < booking.start_time:
+            return Response({'error': 'Work cannot start before the agreed start date.'}, status=400)
+
         booking.booking_status = 'InProgress'
-        booking.save(update_fields=['booking_status'])
+        booking.started_at = timezone.now()
+        booking.save(update_fields=['booking_status', 'started_at'])
 
         # Notify counterparty
         counterparty = assignment.accepter_id if is_poster and assignment else booking.poster_id
@@ -338,9 +345,10 @@ class BookingCompleteView(APIView):
     """
     permission_classes = [IsAuthenticated]
 
+    @transaction.atomic
     def patch(self, request, booking_id):
         try:
-            booking = tbl_booking.objects.get(booking_id=booking_id)
+            booking = tbl_booking.objects.select_for_update().get(booking_id=booking_id)
         except tbl_booking.DoesNotExist:
             return Response({'error': 'Booking not found.'}, status=status.HTTP_404_NOT_FOUND)
 
@@ -351,12 +359,13 @@ class BookingCompleteView(APIView):
         if not (is_poster or is_accepter):
             return Response({'error': 'You are not authorized to complete this booking.'}, status=status.HTTP_403_FORBIDDEN)
 
-        if booking.booking_status not in ['InProgress', 'Accepted']:
+        if booking.booking_status != 'InProgress' or not booking.started_at or booking.started_at > timezone.now() or timezone.now() < booking.start_time:
             return Response({'error': f'Booking cannot be completed from {booking.booking_status} status.'},
                             status=status.HTTP_400_BAD_REQUEST)
 
         booking.booking_status = 'Completed'
-        booking.save(update_fields=['booking_status'])
+        booking.completed_at = timezone.now()
+        booking.save(update_fields=['booking_status', 'completed_at'])
 
         # Notify counterparty and encourage review
         counterparty = assignment.accepter_id if is_poster and assignment else booking.poster_id
@@ -379,9 +388,10 @@ class BookingCancelView(APIView):
     """
     permission_classes = [IsAuthenticated]
 
+    @transaction.atomic
     def patch(self, request, booking_id):
         try:
-            booking = tbl_booking.objects.get(booking_id=booking_id)
+            booking = tbl_booking.objects.select_for_update().get(booking_id=booking_id)
         except tbl_booking.DoesNotExist:
             return Response({'error': 'Booking not found.'}, status=status.HTTP_404_NOT_FOUND)
 
@@ -389,7 +399,8 @@ class BookingCancelView(APIView):
         is_accepter = assignment and assignment.accepter_id == request.user
         is_poster = booking.poster_id == request.user
 
-        if not (is_poster or is_accepter):
+        is_offer_recipient = booking.booking_status == 'Pending' and booking.recipient_id_id == request.user.pk
+        if not (is_poster or is_accepter or is_offer_recipient):
             return Response({'error': 'You are not authorized to cancel this booking.'}, status=status.HTTP_403_FORBIDDEN)
 
         if booking.booking_status in ['Completed', 'Cancelled']:
@@ -397,6 +408,7 @@ class BookingCancelView(APIView):
 
         booking.booking_status = 'Cancelled'
         booking.save(update_fields=['booking_status'])
+        booking.proposals.filter(status='Pending').update(status='Rejected')
 
         # Notify counterparty if assignment existed
         if assignment and assignment.accepter_id:
@@ -453,7 +465,7 @@ class MyAssignedBookingsView(generics.ListAPIView):
     def get_queryset(self):
         user = self.request.user
         qs = tbl_booking.objects.filter(
-            assignments__accepter_id=user
+            Q(assignments__accepter_id=user) | Q(recipient_id=user)
         ).select_related('poster_id').order_by('-createdAt')
 
         status_param = self.request.query_params.get('status', '').strip().lower()
@@ -477,78 +489,40 @@ class BookingProposalCreateView(APIView):
     """
     permission_classes = [IsAuthenticated]
 
+    @transaction.atomic
     def post(self, request, booking_id):
-        try:
-            booking = tbl_booking.objects.get(booking_id=booking_id)
-        except tbl_booking.DoesNotExist:
-            return Response({'error': 'Booking not found.'}, status=status.HTTP_404_NOT_FOUND)
-
-        if getattr(request.user, 'verification_status', None) != 'Verified':
-            return Response({'error': 'Only verified users can submit counter-offer proposals.'}, status=status.HTTP_403_FORBIDDEN)
-
-        if booking.poster_id == request.user:
-            return Response({'error': 'You cannot make a proposal on your own booking.'}, status=status.HTTP_400_BAD_REQUEST)
-
-        if getattr(booking.poster_id, 'account_type', None) == request.user.account_type:
-            return Response({'error': f'You cannot make a proposal on a booking created by another {request.user.account_type}.'}, status=status.HTTP_400_BAD_REQUEST)
-
-        if booking.booking_status != 'Pending':
-            return Response({'error': 'Proposals can only be submitted for Pending bookings.'}, status=status.HTTP_400_BAD_REQUEST)
-
-        # Anti-spam: check if user already has a pending proposal for this booking
-        if tbl_booking_proposal.objects.filter(booking_id=booking, proposer_id=request.user, status='Pending').exists():
-            return Response({'error': 'You already have an active pending proposal for this booking. Please wait for the other party to respond.'}, status=status.HTTP_400_BAD_REQUEST)
-
-        proposed_rate = request.data.get('proposed_rate')
-        message = str(request.data.get('message', '') or '').strip()
-
+        message = str(request.data.get('message') or '').strip()
         if len(message) > 500:
-            return Response({'error': 'Proposal message cannot exceed 500 characters.'}, status=status.HTTP_400_BAD_REQUEST)
+            raise ValidationError({'message': 'Proposal message cannot exceed 500 characters.'})
+        if 'rate_period' not in request.data:
+            raise ValidationError({'rate_period': 'Specify day or month for the proposed amount.'})
+        proposal = create_proposal(booking_id, request.user, request.data.get('proposed_rate'),
+                                   request.data.get('rate_period'), message)
+        booking = proposal.booking_id
+        from chat.models import tbl_chat_message
+        tbl_chat_message.objects.create(sender_id=request.user, receiver_id=booking.poster_id,
+            booking_id=booking, booking_proposal=proposal, is_booking_offer=True,
+            message_payload='Booking proposal: review the proposed compensation and post terms.')
+        name = f"{request.user.first_name} {request.user.last_name}".strip() or request.user.username
+        action = 'applied for your job' if booking.poster_id.account_type == 'Homeowner' else 'sent a hiring offer for your service'
+        send_in_app_notification(receiver=booking.poster_id, sender=request.user,
+                                 message=f"{name} {action} at ₱{proposal.proposed_rate}/{booking.rate_period}.")
+        return Response({'message': 'Proposal submitted successfully.',
+                         'proposal': BookingProposalSerializer(proposal).data}, status=201)
 
-        if not proposed_rate:
-            return Response({'error': 'Proposed rate is required.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        try:
-            rate_val = Decimal(str(proposed_rate))
-            if not rate_val.is_finite() or rate_val < Decimal('1.00') or rate_val > Decimal('999999.99'):
-                raise ValueError
-            rate_val = rate_val.quantize(Decimal('0.01'))
-        except Exception:
-            return Response({'error': 'Proposed rate must be a valid amount between ₱1.00 and ₱999,999.99.'}, status=status.HTTP_400_BAD_REQUEST)
+class MyProposalBookingsView(APIView):
+    permission_classes = [IsAuthenticated]
 
-        # Enforce statutory minimum wage if booking is long_term (Batas Kasambahay RA 10361)
-        if booking.booking_type == 'long_term':
-            full_address = f"{booking.full_address} {booking.zip_code or ''}".strip()
-            min_wage = get_minimum_daily_wage('long_term', full_address)
-            if rate_val < min_wage:
-                approx_monthly = get_monthly_equivalent(min_wage)
-                return Response({
-                    'error': (
-                        f"Proposed rate for long-term domestic service cannot be below the legal minimum wage "
-                        f"of ₱{min_wage:.2f}/day (approx. ₱{approx_monthly:,.2f}/month under Batas Kasambahay RA 10361)."
-                    )
-                }, status=status.HTTP_400_BAD_REQUEST)
-
-        proposal = tbl_booking_proposal.objects.create(
-            booking_id=booking,
-            proposer_id=request.user,
-            proposed_rate=rate_val,
-            message=message
-        )
-
-        # Notify poster
-        proposer_name = f"{request.user.first_name} {request.user.last_name}".strip() or request.user.username
-        proposal_action = 'applied for your job' if booking.poster_id.account_type == 'Homeowner' else 'sent a hiring offer for your service'
-        send_in_app_notification(
-            receiver=booking.poster_id,
-            sender=request.user,
-            message=f"{proposer_name} {proposal_action} at P{rate_val}/day. Review the proposal in your pending posts."
-        )
-
-        return Response({
-            'message': 'Proposal submitted successfully.',
-            'proposal': BookingProposalSerializer(proposal).data
-        }, status=status.HTTP_201_CREATED)
+    def get(self, request):
+        rows = tbl_booking_proposal.objects.filter(proposer_id=request.user, status__in=['Pending', 'Accepted']).select_related('booking_id', 'booking_id__poster_id').order_by('-createdAt')
+        seen = set()
+        bookings = []
+        for proposal in rows:
+            if proposal.booking_id_id not in seen:
+                seen.add(proposal.booking_id_id)
+                bookings.append(proposal.booking_id)
+        return Response(BookingFeedSerializer(bookings, many=True, context={'request': request}).data)
 
 
 class BookingProposalListView(generics.ListAPIView):
@@ -579,7 +553,7 @@ class BookingProposalRespondView(APIView):
     Poster accepts or rejects a counter-offer proposal (Tier 2-1).
     If accepted:
       - proposal.status = 'Accepted'
-      - booking.daily_rate = proposal.proposed_rate
+      - booking.rate_amount = proposal.proposed_rate
       - booking.booking_status = 'Accepted'
       - creates tbl_booking_assignment with accepter_id = proposal.proposer_id
       - rejects other pending proposals
@@ -604,20 +578,8 @@ class BookingProposalRespondView(APIView):
             return Response({'error': f'Proposal has already been {proposal.status}.'}, status=status.HTTP_400_BAD_REQUEST)
 
         if action == 'accept':
-            proposal.status = 'Accepted'
-            proposal.save(update_fields=['status'])
-
-            booking.daily_rate = proposal.proposed_rate
-            booking.booking_status = 'Accepted'
-            booking.save(update_fields=['daily_rate', 'booking_status'])
-
-            tbl_booking_assignment.objects.update_or_create(
-                booking_id=booking,
-                defaults={'accepter_id': proposal.proposer_id}
-            )
-
-            # Reject all other pending proposals for this booking
-            tbl_booking_proposal.objects.filter(booking_id=booking, status='Pending').exclude(proposal_id=proposal.proposal_id).update(status='Rejected')
+            booking, accepter = accept_engagement(booking.pk, request.user, proposal.pk)
+            proposal.refresh_from_db()
 
             # Notify proposer
             poster_name = f"{request.user.first_name} {request.user.last_name}".strip() or request.user.username
@@ -633,8 +595,9 @@ class BookingProposalRespondView(APIView):
                 'booking': BookingDetailSerializer(booking, context={'request': request}).data
             }, status=status.HTTP_200_OK)
         else:
-            proposal.status = 'Rejected'
-            proposal.save(update_fields=['status'])
+            if not tbl_booking_proposal.objects.filter(pk=proposal.pk, status='Pending').update(status='Rejected'):
+                raise ValidationError({'error': 'This proposal has already been resolved.'})
+            proposal.refresh_from_db()
 
             # Notify proposer
             send_in_app_notification(
@@ -676,7 +639,7 @@ class BookingRecommendationsView(APIView):
 
                 # Rating matching (+0 to 40)
                 avg_r = tbl_review.objects.filter(reviewee_id=w).aggregate(avg=Avg('rating'))['avg']
-                rating_val = float(avg_r) if avg_r is not None else 4.0
+                rating_val = float(avg_r) if avg_r is not None else 0.0
                 score += int(rating_val * 8)
 
                 # Verification bonus (+20)
@@ -708,7 +671,7 @@ class BookingRecommendationsView(APIView):
         else:
             # Kasambahay: Recommend open Pending jobs from Homeowners
             pending_jobs = tbl_booking.objects.filter(
-                booking_status='Pending',
+                booking_status='Pending', recipient_id__isnull=True,
                 poster_id__account_type='Homeowner'
             ).select_related('poster_id')
 
@@ -731,7 +694,7 @@ class BookingRecommendationsView(APIView):
                     score += 25
 
                 # Fair rate bonus
-                if job.daily_rate >= Decimal('500.00'):
+                if job.rate_amount >= Decimal('500.00'):
                     score += 10
 
                 from .serializers import get_signed_avatar
@@ -741,7 +704,8 @@ class BookingRecommendationsView(APIView):
                 scored_jobs.append({
                     'booking_id': str(job.booking_id),
                     'title': ", ".join(job.service_category) if isinstance(job.service_category, list) else str(job.service_category),
-                    'daily_rate': str(job.daily_rate),
+                    'rate_amount': str(job.rate_amount),
+                    'rate_period': job.rate_period,
                     'location': display_loc,
                     'barangay': job.barangay,
                     'city': job.city,
@@ -751,6 +715,7 @@ class BookingRecommendationsView(APIView):
                     'poster_name': f"{p_first} {p_last}".strip() or job.poster_id.username,
                     'poster_avatar': get_signed_avatar(job.poster_id),
                     'booking_type': job.booking_type,
+                    'work_setup': job.work_setup,
                     'createdAt': str(job.createdAt),
                 })
 
@@ -779,7 +744,7 @@ class BookingMinimumWageView(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
         address = str(request.query_params.get('address', '') or '').strip()
-        info = get_minimum_wage_info(booking_type, address)
+        info = get_minimum_wage_info(booking_type, address, request.query_params.get('region', ''))
         return Response(info, status=status.HTTP_200_OK)
 
 
@@ -813,6 +778,8 @@ class BookingSaveToggleView(APIView):
                 status=status.HTTP_404_NOT_FOUND
             )
 
+        if booking.recipient_id_id and request.user.pk not in (booking.poster_id_id, booking.recipient_id_id):
+            raise PermissionDenied('Private offers are only available to their participants.')
         saved_record = tbl_saved_post.objects.filter(user=request.user, booking=booking).first()
         if saved_record:
             saved_record.delete()
@@ -852,4 +819,39 @@ class SavedBookingListView(APIView):
                     results.append(serialized)
 
         return Response(results, status=status.HTTP_200_OK)
-
+
+
+
+class BookingRateReviewView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    @transaction.atomic
+    def patch(self, request, booking_id):
+        booking = get_object_or_404(tbl_booking.objects.select_for_update(), pk=booking_id)
+        if booking.poster_id_id != request.user.pk:
+            raise PermissionDenied('Only the poster can confirm the compensation.')
+        if booking.booking_status != 'Pending' or booking.assignments.exists():
+            raise ValidationError({'error': 'Confirmed engagements cannot be repriced through a post.'})
+        if booking.recipient_id_id:
+            raise ValidationError({'error': 'Withdraw this private offer and send a new offer to change its agreed terms.'})
+        if 'rate_period' not in request.data:
+            raise ValidationError({'rate_period': 'Specify day or month.'})
+        amount = validate_rate(request.data.get('rate_amount'), booking.booking_type,
+                               booking.region, booking.full_address, period=request.data['rate_period'])
+        booking.rate_amount = amount
+        booking.rate_needs_review = False
+        booking.save(update_fields=['rate_amount', 'rate_needs_review'])
+        booking.proposals.filter(status='Pending').update(status='Rejected')
+        return Response(BookingDetailSerializer(booking, context={'request': request}).data)
+
+
+class BookingContractTemplateView(APIView):
+    # The blank government form contains no user or booking data.
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        from pathlib import Path
+        from django.http import FileResponse
+        template = Path(__file__).parent / 'assets' / 'dole-standard-kasambahay-contract.pdf'
+        return FileResponse(template.open('rb'), content_type='application/pdf', as_attachment=True,
+                            filename='DOLE-Standard-Kasambahay-Contract.pdf')

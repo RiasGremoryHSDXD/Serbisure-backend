@@ -112,6 +112,13 @@ This document outlines the database schema, models, field types, and choices (en
 | `booking_id` | `UUIDField` | Primary Key, Unique |
 | `poster_id` | `ForeignKey` | FK -> `tbl_user_profile` |
 | `booking_type` | `CharField` | Choices: ['short_term', 'long_term'] |
+| `work_setup` | `CharField` | Null=True, Blank=True, Choices: ['stay_in', 'stay_out'] |
+| `recipient_id` | `ForeignKey` | Null=True, Blank=True, FK -> `tbl_user_profile` |
+| `offer_request_key` | `UUIDField` | Null=True, Blank=True |
+| `offer_payload_hash` | `CharField` | Blank=True |
+| `work_days` | `ArrayField` | Blank=True |
+| `daily_start_time` | `TimeField` | Null=True, Blank=True |
+| `daily_end_time` | `TimeField` | Null=True, Blank=True |
 | `booking_status` | `CharField` | Choices: ['Pending', 'Accepted', 'InProgress', 'Completed', 'Cancelled'] |
 | `service_category` | `ArrayField` | - |
 | `start_time` | `DateTimeField` | - |
@@ -124,7 +131,11 @@ This document outlines the database schema, models, field types, and choices (en
 | `floor_number` | `CharField` | Null=True, Blank=True |
 | `zip_code` | `CharField` | Null=True, Blank=True |
 | `special_instruction` | `TextField` | Null=True, Blank=True |
-| `daily_rate` | `DecimalField` | - |
+| `rate_amount` | `DecimalField` | - |
+| `rate_period` | `CharField` | Choices: ['day', 'month'] |
+| `rate_needs_review` | `BooleanField` | - |
+| `started_at` | `DateTimeField` | Null=True, Blank=True |
+| `completed_at` | `DateTimeField` | Null=True, Blank=True |
 | `createdAt` | `DateTimeField` | Blank=True |
 
 ### `tbl_booking_assignment`
@@ -173,6 +184,8 @@ This document outlines the database schema, models, field types, and choices (en
 | `reviewee_id` | `ForeignKey` | FK -> `tbl_user_profile` |
 | `unstructured_feedback` | `TextField` | - |
 | `nlp_sentiment` | `CharField` | Choices: ['Positive', 'Neutral', 'Negative'] |
+| `sentiment_analysis` | `JSONField` | Blank=True |
+| `submission_key` | `UUIDField` | Null=True, Blank=True |
 | `rating` | `IntegerField` | - |
 | `createdAt` | `DateTimeField` | Blank=True |
 
@@ -201,6 +214,8 @@ This document outlines the database schema, models, field types, and choices (en
 | `sender_id` | `ForeignKey` | FK -> `tbl_user_profile` |
 | `receiver_id` | `ForeignKey` | FK -> `tbl_user_profile` |
 | `booking_id` | `ForeignKey` | Null=True, Blank=True, FK -> `tbl_booking` |
+| `is_booking_offer` | `BooleanField` | - |
+| `booking_proposal` | `ForeignKey` | Null=True, Blank=True, FK -> `tbl_booking_proposal` |
 | `message_type` | `CharField` | Choices: ['text', 'image'] |
 | `image_public_id` | `CharField` | Null=True, Blank=True |
 | `message_payload` | `EncryptedTextField` | Null=True, Blank=True |

@@ -1,6 +1,9 @@
 from django.urls import path
+from .chat_offers import ChatBookingOfferView
 from .views import (
     BookingView,
+    BookingRateReviewView,
+    BookingContractTemplateView,
     BookingFeedView,
     PublicPendingPostsView,
     BookingDetailView,
@@ -12,6 +15,7 @@ from .views import (
     MyAssignedBookingsView,
     BookingProposalCreateView,
     BookingProposalListView,
+    MyProposalBookingsView,
     BookingProposalRespondView,
     BookingRecommendationsView,
     BookingMinimumWageView,
@@ -20,6 +24,9 @@ from .views import (
 )
 
 urlpatterns = [
+    path('chat-offers/', ChatBookingOfferView.as_view(), name='booking-chat-offer'),
+    path('my-proposals/', MyProposalBookingsView.as_view(), name='booking-my-proposals'),
+    path('contract-template/', BookingContractTemplateView.as_view(), name='booking-contract-template'),
     path('post/', BookingView.as_view(), name='booking-post'),
     path('feed/', BookingFeedView.as_view(), name='booking-feed'),
     path('profile/<uuid:user_id>/pending/', PublicPendingPostsView.as_view(), name='booking-profile-pending'),
@@ -30,6 +37,7 @@ urlpatterns = [
     path('save/', BookingSaveToggleView.as_view(), name='booking-save-toggle'),
     path('saved/', SavedBookingListView.as_view(), name='booking-saved-list'),
     path('<uuid:booking_id>/', BookingDetailView.as_view(), name='booking-detail'),
+    path('<uuid:booking_id>/rate/', BookingRateReviewView.as_view(), name='booking-rate-review'),
     path('<uuid:booking_id>/accept/', BookingAcceptView.as_view(), name='booking-accept'),
     path('<uuid:booking_id>/start/', BookingStartView.as_view(), name='booking-start'),
     path('<uuid:booking_id>/complete/', BookingCompleteView.as_view(), name='booking-complete'),

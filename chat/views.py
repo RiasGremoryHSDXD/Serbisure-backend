@@ -459,7 +459,7 @@ class ChatMessageView(generics.ListAPIView):
             Q(sender_id=current_user, receiver_id=partner_id) |
             Q(sender_id=partner_id, receiver_id=current_user),
             is_deleted=False
-        ).select_related('sender_id', 'receiver_id').prefetch_related('reactions').order_by('createdAt')
+        ).select_related('sender_id', 'receiver_id', 'booking_id', 'booking_id__poster_id', 'booking_id__recipient_id', 'booking_proposal').prefetch_related('reactions').order_by('createdAt')
 
     def list(self, request, *args, **kwargs):
         partner_id = self.kwargs.get('partner_id')

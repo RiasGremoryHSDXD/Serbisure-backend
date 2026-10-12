@@ -10,6 +10,15 @@ from PIL import Image
 class DocumentUploadTests(APITestCase):
 
     def setUp(self):
+        ocr_patch = patch('verifications.serializers.process_document_ocr', return_value={
+            'raw_text': '', 'extracted_data': {}, 'match_score': None, 'discrepancies': [],
+        })
+        ocr_patch.start()
+        self.addCleanup(ocr_patch.stop)
+        worker_patch = patch('verifications.services.document_processor.process_document_async')
+        worker_patch.start()
+        self.addCleanup(worker_patch.stop)
+
         super().setUp()
         # 1. Create a Kasambahay User
         self.kasambahay = tbl_user_profile.objects.create_user(
@@ -191,13 +200,13 @@ class DocumentUploadTests(APITestCase):
     def test_rate_limiting_blocks_spam(self):
         self.client.force_authenticate(user=self.homeowner)
         
-        # Our limit is 5 per day. We will send 6 requests!
+        # The configured limit is 20 per day. We will send 21 requests!
         # Note: Even if a request fails validation, DRF still counts it towards the throttle!
-        for i in range(5):
+        for i in range(20):
             res = self.client.post(self.upload_url, {}, format='multipart')
             self.assertNotEqual(res.status_code, status.HTTP_429_TOO_MANY_REQUESTS)
             
-        # The 6th request should hit the firewall!
+        # The 21st request should be throttled!
         spam_res = self.client.post(self.upload_url, {}, format='multipart')
         self.assertEqual(spam_res.status_code, status.HTTP_429_TOO_MANY_REQUESTS)
         self.assertIn("Too many attempts", str(spam_res.data))

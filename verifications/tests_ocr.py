@@ -44,7 +44,7 @@ class MatchingServiceUnitTests(APITestCase):
             "valid_until": "2029-12-31",
         }
         score, discrepancies = detect_discrepancies(extracted_data, self.user)
-        self.assertLess(score, 0.70)
+        self.assertLess(score, 70.0)
         self.assertTrue(any(d["field"] == "first_name" for d in discrepancies))
         first_name_disc = next(d for d in discrepancies if d["field"] == "first_name")
         self.assertEqual(first_name_disc["profile_value"], "Anabeal")
@@ -381,7 +381,8 @@ class DocumentProcessorPipelineTests(APITestCase):
         self.doc.refresh_from_db()
         self.assertIn("NBI CLEARANCE", self.doc.ocr_raw_text)
         self.assertEqual(self.doc.extracted_data["first_name"], "Anabeal")
-        self.assertGreaterEqual(self.doc.ocr_match_score, 0.90)
+        self.assertGreaterEqual(self.doc.ocr_match_score, 90.0)
+        self.assertLessEqual(self.doc.ocr_match_score, 100.0)
         self.assertEqual(len(self.doc.ocr_discrepancies), 0)
         self.assertIsNotNone(self.doc.ocr_processed_at)
         # CRITICAL: Always remains Pending for manual Admin/Barangay review!

@@ -1,0 +1,4 @@
+# Preserve the existing CRLF layout of these legacy modules.
+booking/models.py -text whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol
+booking/serializers.py -text whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol
+booking/views.py -text whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol
