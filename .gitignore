@@ -14,3 +14,7 @@ __pycache__/
 # Pytest Coverage
 .coverage
 .pytest_cache/
+
+# Generated CV samples and PDF visual QA files
+output/pdf/
+tmp/pdfs/

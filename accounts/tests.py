@@ -1179,7 +1179,7 @@ class TestUserAPIEndpoints(TestCase):
 
 class TestKasambahayResumeEndpoint(TestCase):
     """
-    Test suite for the Kasambahay Resume upload & retrieval endpoint:
+    Test suite for owner-only retrieval of legacy resumes and retired upload routes:
     - GET /api/v1/accounts/resume/
     - PATCH /api/v1/accounts/resume/
     - POST /api/v1/accounts/resume/
@@ -1277,144 +1277,25 @@ class TestKasambahayResumeEndpoint(TestCase):
         response = self.client.patch(self.resume_url, {"resume_pdf": pdf}, format='multipart')
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
-    def test_resume_patch_missing_file_rejected(self):
-        """
-        GIVEN  a Kasambahay sending PATCH without a file
-        THEN   400 Bad Request.
-        """
-        self.client.force_authenticate(user=self.kasambahay)
-        response = self.client.patch(self.resume_url, {}, format='multipart')
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("resume_pdf", response.data)
-
-    def test_resume_patch_non_pdf_file_rejected(self):
-        """
-        GIVEN  a Kasambahay uploading a .jpg instead of .pdf
-        THEN   400 Bad Request — only PDF files are allowed.
-        """
-        self.client.force_authenticate(user=self.kasambahay)
-        fake_image = SimpleUploadedFile("my_resume.jpg", b"fake-jpg-content", content_type="image/jpeg")
-        response = self.client.patch(self.resume_url, {"resume_pdf": fake_image}, format='multipart')
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("Only PDF files are accepted", str(response.data))
-
-    def test_resume_patch_file_exceeding_10mb_rejected(self):
-        """
-        GIVEN  a PDF file larger than 10MB
-        THEN   400 Bad Request — file size limit enforced.
-        """
-        self.client.force_authenticate(user=self.kasambahay)
-        large_pdf = self._generate_dummy_pdf(size_bytes=10 * 1024 * 1024 + 100)
-        response = self.client.patch(self.resume_url, {"resume_pdf": large_pdf}, format='multipart')
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("under 10MB", str(response.data))
-
-    @patch('cloudinary.utils.cloudinary_url')
     @patch('cloudinary.uploader.upload')
-    def test_resume_patch_valid_pdf_succeeds_and_updates_model(self, mock_upload, mock_url):
-        """
-        GIVEN  a valid PDF file under 10MB
-        WHEN   Kasambahay uploads via PATCH
-        THEN   200 OK, Cloudinary upload triggered with resource_type='raw',
-               and user model updated with resume_url and resume_uploaded_at.
-        """
-        mock_upload.return_value = {'public_id': 'serbisure_resumes/sample_resume_id'}
-        mock_url.return_value = ("https://res.cloudinary.com/signed-url/sample_resume_id.pdf", {})
-
+    def test_retired_resume_write_methods_never_upload_or_replace_old_files(self, upload):
         self.client.force_authenticate(user=self.kasambahay)
-        pdf = self._generate_dummy_pdf(name="my_cv.pdf")
-        response = self.client.patch(self.resume_url, {"resume_pdf": pdf}, format='multipart')
-
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(response.data.get("resume_url"), "https://res.cloudinary.com/signed-url/sample_resume_id.pdf")
-        self.assertIsNotNone(response.data.get("resume_uploaded_at"))
-
+        self.kasambahay.resume_url = 'legacy-owner-file.pdf'
+        self.kasambahay.save(update_fields=['resume_url'])
+        for method in ('patch', 'post', 'put'):
+            with self.subTest(method=method):
+                response = getattr(self.client, method)(self.resume_url, {'resume_pdf': self._generate_dummy_pdf()}, format='multipart')
+                self.assertEqual(response.status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
+        upload.assert_not_called()
         self.kasambahay.refresh_from_db()
-        self.assertEqual(self.kasambahay.resume_url, 'serbisure_resumes/sample_resume_id')
-        self.assertIsNotNone(self.kasambahay.resume_uploaded_at)
-
-        mock_upload.assert_called_once()
-        _, kwargs = mock_upload.call_args
-        self.assertEqual(kwargs.get("resource_type"), "image")
-        self.assertEqual(kwargs.get("format"), "pdf")
-        self.assertEqual(kwargs.get("folder"), "serbisure_resumes/")
+        self.assertEqual(self.kasambahay.resume_url, 'legacy-owner-file.pdf')
 
     @patch('cloudinary.utils.cloudinary_url')
-    @patch('cloudinary.uploader.upload')
-    def test_resume_post_alias_succeeds(self, mock_upload, mock_url):
-        """
-        GIVEN  a valid PDF file
-        WHEN   sent via POST (alias for multipart upload)
-        THEN   200 OK and model is updated.
-        """
-        mock_upload.return_value = {'public_id': 'serbisure_resumes/post_alias_id'}
-        mock_url.return_value = ("https://res.cloudinary.com/signed-url/post_alias_id.pdf", {})
-
-        self.client.force_authenticate(user=self.kasambahay)
-        pdf = self._generate_dummy_pdf(name="post_cv.pdf")
-        response = self.client.post(self.resume_url, {"resume_pdf": pdf}, format='multipart')
-
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.kasambahay.refresh_from_db()
-        self.assertEqual(self.kasambahay.resume_url, 'serbisure_resumes/post_alias_id')
-
-    @patch('cloudinary.utils.cloudinary_url')
-    @patch('cloudinary.uploader.upload')
-    def test_resume_idempotency_cached_on_repeated_key(self, mock_upload, mock_url):
-        """
-        GIVEN  an Idempotency-Key header on PATCH
-        WHEN   sent twice with the same key
-        THEN   Cloudinary is only called once, and second request receives cached response.
-        """
-        mock_upload.return_value = {'public_id': 'serbisure_resumes/idemp_resume'}
-        mock_url.return_value = ("https://res.cloudinary.com/signed-url/idemp_resume.pdf", {})
-
-        self.client.force_authenticate(user=self.kasambahay)
-        idemp_key = str(uuid.uuid4())
-
-        pdf1 = self._generate_dummy_pdf(name="cv1.pdf")
-        res1 = self.client.patch(
-            self.resume_url,
-            {"resume_pdf": pdf1},
-            format='multipart',
-            HTTP_IDEMPOTENCY_KEY=idemp_key
-        )
-        self.assertEqual(res1.status_code, status.HTTP_200_OK)
-        self.assertEqual(mock_upload.call_count, 1)
-
-        # 2nd attempt with same key (simulating double click)
-        pdf2 = self._generate_dummy_pdf(name="cv2.pdf")
-        res2 = self.client.patch(
-            self.resume_url,
-            {"resume_pdf": pdf2},
-            format='multipart',
-            HTTP_IDEMPOTENCY_KEY=idemp_key
-        )
-        self.assertEqual(res2.status_code, status.HTTP_200_OK)
-        self.assertEqual(mock_upload.call_count, 1)  # Still 1, didn't re-upload!
-        self.assertEqual(res1.data, res2.data)
-
-    def test_resume_invalid_idempotency_key_rejected(self):
-        """
-        GIVEN  an invalid non-UUID Idempotency-Key
-        THEN   400 Bad Request.
-        """
-        self.client.force_authenticate(user=self.kasambahay)
-        pdf = self._generate_dummy_pdf()
-        response = self.client.patch(
-            self.resume_url,
-            {"resume_pdf": pdf},
-            format='multipart',
-            HTTP_IDEMPOTENCY_KEY="not-a-valid-uuid"
-        )
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-
-    @patch('cloudinary.utils.cloudinary_url')
-    def test_public_profile_includes_resume_url_for_kasambahay(self, mock_url):
+    def test_public_profile_hides_legacy_resume_url_for_kasambahay(self, mock_url):
         """
         GIVEN  a Kasambahay with an uploaded resume
         WHEN   any authenticated user fetches their public profile
-        THEN   resume_url is included with a signed URL.
+        THEN   old uploads are not shared; viewers use the generated CV endpoint.
         """
         mock_url.return_value = ("https://res.cloudinary.com/signed/public_resume.pdf", {})
         self.kasambahay.resume_url = "serbisure_resumes/kasa_pub_resume"
@@ -1424,7 +1305,7 @@ class TestKasambahayResumeEndpoint(TestCase):
         response = self.client.get(f"{self.public_profile_base}{self.kasambahay.id}/")
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(response.data.get("resume_url"), "https://res.cloudinary.com/signed/public_resume.pdf")
+        self.assertIsNone(response.data.get("resume_url"))
 
     def test_public_profile_excludes_resume_url_for_homeowner(self):
         """

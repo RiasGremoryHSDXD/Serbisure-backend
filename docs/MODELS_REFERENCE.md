@@ -4,6 +4,35 @@ This document outlines the database schema, models, field types, and choices (en
 
 ## Accounts App
 
+### `tbl_worker_profile`
+- **Database Table:** `tbl_worker_profile`
+
+| Field Name | Data Type | Constraints / Choices / FK |
+| --- | --- | --- |
+| `id` | `BigAutoField` | Primary Key, Unique, Blank=True |
+| `user` | `OneToOneField` | Unique, FK -> `tbl_user_profile` |
+| `service_categories` | `JSONField` | Blank=True |
+| `work_setup` | `CharField` | Blank=True, Choices: ['stay_in', 'stay_out', 'either'] |
+| `engagement_preference` | `CharField` | Blank=True, Choices: ['short_term', 'long_term', 'both'] |
+| `desired_monthly_rate` | `DecimalField` | Null=True, Blank=True |
+| `desired_daily_rate` | `DecimalField` | Null=True, Blank=True |
+| `civil_status` | `CharField` | Blank=True, Choices: ['Single', 'Married', 'Widowed', 'Separated'] |
+| `number_of_children` | `PositiveSmallIntegerField` | Null=True, Blank=True |
+| `experience_level` | `CharField` | Blank=True, Choices: ['new', 'household', 'paid'] |
+| `experience_duration` | `CharField` | Blank=True, Choices: ['under_1', '1_to_3', 'over_3'] |
+| `experience_summary` | `CharField` | Blank=True |
+| `practical_skills` | `JSONField` | Blank=True |
+| `available_from` | `DateField` | Null=True, Blank=True |
+| `available_days` | `JSONField` | Blank=True |
+| `preferred_shifts` | `JSONField` | Blank=True |
+| `preferred_work_areas` | `JSONField` | Blank=True |
+| `education` | `CharField` | Blank=True |
+| `training` | `JSONField` | Blank=True |
+| `references_available` | `BooleanField` | - |
+| `share_family_details` | `BooleanField` | - |
+| `share_contact_details` | `BooleanField` | - |
+| `updated_at` | `DateTimeField` | Blank=True |
+
 ### `tbl_user_profile`
 - **Database Table:** `accounts_tbl_user_profile`
 

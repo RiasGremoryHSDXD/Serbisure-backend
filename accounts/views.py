@@ -13,7 +13,7 @@ from .serializers import (
     PublicProfileSerializer,
     KasambahayResumeSerializer,
 )
-from .permissions import IsKasambahay
+from .permissions import IsKasambahay, IsPortalAdmin, IsPortalSuperadmin
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework_simplejwt.views import TokenObtainPairView
 from rest_framework.throttling import AnonRateThrottle, UserRateThrottle
@@ -292,163 +292,14 @@ class AdminUserListView(generics.ListAPIView):
 
 
 class AdminDashboardStatsView(APIView):
-    """
-    Provides real-time aggregated metrics directly from the database for the SerbiSure Admin dashboard.
-    Supports citywide view (Superadmin) and barangay-scoped view (Local LGU).
-    """
-    permission_classes = [AllowAny]
+    """One authoritative database snapshot; resident locations never imply LGU accounts."""
+    permission_classes = [IsAuthenticated, IsPortalAdmin]
 
     def get(self, request, *args, **kwargs):
-        barangay_param = request.query_params.get('barangay')
-        
-        # Strictly lock LGU officers to their assigned barangay
-        if request.user.is_authenticated and getattr(request.user, 'account_type', None) == 'Barangay':
-            barangay_param = request.user.barangay
-
-        # Dynamic Barangay Breakdowns
-        # SOURCE OF TRUTH: only barangays with an active LGU Barangay account are included.
-        lgu_barangay_names = list(
-            tbl_user_profile.objects.filter(
-                account_type='Barangay',
-                is_active=True,
-            )
-            .exclude(barangay__isnull=True)
-            .exclude(barangay='')
-            .values_list('barangay', flat=True)
-            .distinct()
-        )
-        all_barangays = sorted(set(b.strip().title() for b in lgu_barangay_names if b and b.strip()))
-
-        workers_qs = tbl_user_profile.objects.filter(account_type='Kasambahay')
-        homeowners_qs = tbl_user_profile.objects.filter(account_type='Homeowner')
-        
-        from django.db.models import Q
-        if barangay_param:
-            if barangay_param.upper() in ['UNASSIGNED', 'NO LGU COVERAGE', 'NO_LGU']:
-                q_assigned = Q()
-                for b in all_barangays:
-                    q_assigned |= Q(barangay__iexact=b)
-                workers_qs = workers_qs.exclude(q_assigned)
-                homeowners_qs = homeowners_qs.exclude(q_assigned)
-            elif barangay_param.upper() not in ['ALL', 'ALL BARANGAYS']:
-                workers_qs = workers_qs.filter(
-                    Q(barangay__iexact=barangay_param) | Q(city__icontains=barangay_param) | Q(street__icontains=barangay_param)
-                )
-                homeowners_qs = homeowners_qs.filter(
-                    Q(barangay__iexact=barangay_param) | Q(city__icontains=barangay_param) | Q(street__icontains=barangay_param)
-                )
-
-        total_workers = workers_qs.count()
-        total_homeowners = homeowners_qs.count()
-        
-        # Calculate employed workers from active booking assignments OR self-marked is_on_job
-        from booking.models import tbl_booking_assignment, tbl_booking
-        active_booking_ids = tbl_booking.objects.filter(
-            booking_status__in=['Accepted', 'InProgress']
-        ).values_list('booking_id', flat=True)
-        
-        assigned_worker_ids = tbl_booking_assignment.objects.filter(
-            booking_id__in=active_booking_ids
-        ).values_list('accepter_id', flat=True).distinct()
-        
-        from django.db.models import Q
-        employed = workers_qs.filter(
-            Q(is_on_job=True) | Q(id__in=assigned_worker_ids)
-        ).distinct().count()
-        available = max(0, total_workers - employed)
-        employment_ratio = round((employed / total_workers * 100)) if total_workers > 0 else 0
-
-        # Dynamic Barangay Breakdowns
-        # SOURCE OF TRUTH: only barangays with an active LGU Barangay account are included.
-        # Homeowners/Kasambahays who live in Agusan/Carmen will NOT pollute this list.
-        barangay_breakdown = []
-        for b_name in all_barangays:
-            import re
-            b_clean = re.sub(r'^(brgy\.?|barangay)\s+', '', b_name, flags=re.IGNORECASE).strip()
-
-            b_workers = tbl_user_profile.objects.filter(
-                account_type='Kasambahay', is_active=True
-            ).filter(
-                Q(barangay__iexact=b_name) | Q(barangay__icontains=b_clean) |
-                Q(city__icontains=b_clean) | Q(street__icontains=b_clean)
-            )
-            b_total = b_workers.count()
-            b_employed = b_workers.filter(
-                Q(is_on_job=True) | Q(id__in=assigned_worker_ids)
-            ).distinct().count()
-            b_avail = max(0, b_total - b_employed)
-            b_ratio = round((b_employed / b_total * 100)) if b_total > 0 else 0
-
-            # All registered residents (Kasambahay + Homeowner) in this barangay
-            b_all_users = list(tbl_user_profile.objects.filter(
-                account_type__in=['Kasambahay', 'Homeowner'], is_active=True
-            ).filter(
-                Q(barangay__iexact=b_name) | Q(barangay__icontains=b_clean) |
-                Q(city__icontains=b_clean) | Q(street__icontains=b_clean)
-            ).prefetch_related('documents'))
-
-            b_verified = 0
-            b_pending = 0
-            b_rejected = 0
-            b_no_docs = 0
-
-            for u in b_all_users:
-                docs = list(u.documents.all())
-                if not docs:
-                    b_no_docs += 1
-                else:
-                    doc_statuses = [d.verification_status for d in docs]
-                    if 'Pending' in doc_statuses:
-                        b_pending += 1
-                    elif 'Rejected' in doc_statuses:
-                        b_rejected += 1
-                    elif all(s == 'Verified' for s in doc_statuses):
-                        b_verified += 1
-                    else:
-                        b_no_docs += 1
-
-            barangay_breakdown.append({
-                "name": b_name,
-                "totalRegistered": len(b_all_users),
-                "totalWorkers": b_total,
-                "employed": b_employed,
-                "available": b_avail,
-                "employmentRatio": b_ratio,
-                "pending": b_pending,
-                "verified": b_verified,
-                "rejected": b_rejected,
-                "noDocuments": b_no_docs,
-                "status": "ACTIVE"
-            })
-
-        # Pending verification queue count (scoped to current perspective)
-        from verifications.models import tbl_documents
-        pending_doc_qs = tbl_documents.objects.filter(verification_status='Pending')
-        if barangay_param:
-            if barangay_param.upper() in ['UNASSIGNED', 'NO LGU COVERAGE', 'NO_LGU']:
-                q_assigned_doc = Q()
-                for b in all_barangays:
-                    q_assigned_doc |= Q(user_profile__barangay__iexact=b)
-                pending_doc_qs = pending_doc_qs.exclude(q_assigned_doc)
-            elif barangay_param.upper() not in ['ALL', 'ALL BARANGAYS']:
-                pending_doc_qs = pending_doc_qs.filter(
-                    Q(user_profile__barangay__iexact=barangay_param) |
-                    Q(user_profile__city__icontains=barangay_param) |
-                    Q(user_profile__street__icontains=barangay_param)
-                )
-        pending_verifications = pending_doc_qs.count()
-
-        return Response({
-            "metrics": {
-                "totalWorkers": total_workers,
-                "totalEmployed": employed,
-                "totalAvailable": available,
-                "employmentRatio": employment_ratio,
-                "totalHomeowners": total_homeowners,
-                "pendingVerifications": pending_verifications,
-            },
-            "barangays": barangay_breakdown,
-        }, status=status.HTTP_200_OK)
+        from .admin_statistics import resident_snapshot, scope_for
+        response = Response(resident_snapshot(scope_for(request), restrict_directory=request.user.account_type == 'Barangay'))
+        response['Cache-Control'] = 'private, no-store'
+        return response
 
 
 class AdminDashboardActivityView(APIView):
@@ -819,45 +670,21 @@ class AdminLoginView(APIView):
 
 
 class AdminActiveBarangaysView(APIView):
-    """
-    Returns the canonical list of active LGU barangays as well as
-    all distinct barangays found among registered users (Homeowners and Kasambahays).
-    """
-    permission_classes = [AllowAny]
+    """Real LGU accounts and registered resident locations, with no seeded jurisdictions."""
+    permission_classes = [IsAuthenticated, IsPortalAdmin]
+
+    def get_permissions(self):
+        classes = [IsAuthenticated, IsPortalSuperadmin] if self.request.method == 'POST' else self.permission_classes
+        return [permission() for permission in classes]
 
     def get(self, request):
-        raw_active_names = list(
-            tbl_user_profile.objects.filter(
-                account_type='Barangay',
-                is_active=True,
-            )
-            .exclude(barangay__isnull=True)
-            .exclude(barangay='')
-            .values_list('barangay', flat=True)
-            .distinct()
-        )
-        active_normalized = sorted(set(b.strip().title() for b in raw_active_names if b and b.strip()))
-
-        # All distinct barangays found across all registered residents (Homeowners and Kasambahays)
-        raw_user_barangays = list(
-            tbl_user_profile.objects.filter(
-                account_type__in=['Homeowner', 'Kasambahay']
-            )
-            .exclude(barangay__isnull=True)
-            .exclude(barangay='')
-            .values_list('barangay', flat=True)
-            .distinct()
-        )
-        user_normalized = sorted(set(b.strip().title() for b in raw_user_barangays if b and b.strip() and b.strip().lower() != 'unassigned'))
-
-        # Also combine any active LGUs with user barangays
-        all_user_barangays = sorted(set(active_normalized + user_normalized))
-
-        return Response({
-            'barangays': active_normalized,
-            'active_lgus': active_normalized,
-            'user_barangays': all_user_barangays,
-        }, status=status.HTTP_200_OK)
+        from .admin_statistics import resident_snapshot, scope_for
+        rows = resident_snapshot(scope_for(request), restrict_directory=request.user.account_type == 'Barangay')['barangays']
+        active = [row['name'] for row in rows if row['status'] == 'ACTIVE']
+        response = Response({'barangays': active, 'active_lgus': active,
+                             'user_barangays': [row['name'] for row in rows]})
+        response['Cache-Control'] = 'private, no-store'
+        return response
 
     def post(self, request):
         """
@@ -1121,67 +948,14 @@ class PublicProfileView(generics.RetrieveAPIView):
     queryset = tbl_user_profile.objects.filter(is_active=True)
 
 
-class ResumeUploadThrottle(UserRateThrottle):
-    scope = 'resume_upload'
-    rate = '5/d'
-
-
-class KasambahayResumeView(generics.RetrieveUpdateAPIView):
-    """
-    Endpoint for Kasambahay users to retrieve (GET) and upload/update (PATCH, POST) their PDF resume.
-    - Only Kasambahay accounts are authorized (403 for others).
-    - Rate-limited to 5 uploads per day on write operations (GET is unthrottled).
-    - Supports Idempotency-Key header on write operations.
-    """
+class KasambahayResumeView(generics.RetrieveAPIView):
+    """Owner-only access to old uploaded files; new CVs use worker-cv exports."""
     permission_classes = [IsAuthenticated, IsKasambahay]
-    parser_classes = (MultiPartParser, FormParser)
     serializer_class = KasambahayResumeSerializer
-
-    def get_throttles(self):
-        if self.request.method in ['PATCH', 'PUT', 'POST']:
-            return [ResumeUploadThrottle()]
-        return []
+    http_method_names = ['get', 'head', 'options']
 
     def get_object(self):
         return self.request.user
-
-    def post(self, request, *args, **kwargs):
-        return self.patch(request, *args, **kwargs)
-
-    def patch(self, request, *args, **kwargs):
-        idempotency_key = request.headers.get('Idempotency-Key')
-        cache_key = None
-        if idempotency_key:
-            if not check_valid_uuid(idempotency_key):
-                return Response(
-                    {"details": "The Idempotency-Key header must be a valid UUID v4."},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-            cache_key = f"resume_idemp_{request.user.id}_{idempotency_key}"
-            cached = cache.get(cache_key)
-            if cached:
-                return Response(cached['data'], status=cached['status'])
-
-        response = super().patch(request, *args, **kwargs)
-
-        if cache_key and response.status_code == status.HTTP_200_OK:
-            cache.set(
-                cache_key,
-                {'data': response.data, 'status': response.status_code},
-                timeout=86400
-            )
-
-        return response
-
-    def throttled(self, request, wait):        
-        # 3600 seconds = 1 hour
-        if wait > 3600: 
-            time_left = math.ceil(wait / 3600)
-            custom_message = f"Too many attempts. Please try again in {time_left} hours."
-        else:
-            custom_message = f"Too many attempts. Please try again in {math.ceil(wait/60)} minutes."
-
-        raise Throttled(detail=custom_message)
 
 
 class ChangePasswordView(APIView):

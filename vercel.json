@@ -6,7 +6,7 @@
             "src": "Serbisure/wsgi.py",
             "use": "@vercel/python",
             "config": {
-                "includeFiles": "booking/assets/**"
+                "includeFiles": "{booking,accounts}/assets/**"
             }
         }
     ],

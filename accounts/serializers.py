@@ -1,7 +1,9 @@
 from rest_framework import serializers
-from django.db import IntegrityError
+from django.db import IntegrityError, transaction
 from django.db.models import Q
 from .models import tbl_user_profile
+from .models import tbl_worker_profile
+from .worker_serializers import WorkerProfileSerializer
 from datetime import date
 from core.utils import (
     convert_title,
@@ -28,6 +30,7 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
     region = serializers.CharField(max_length=100, required=False, allow_blank=True)
     barangay = serializers.CharField(max_length=100, required=False, allow_blank=True)
     street = serializers.CharField(max_length=100, required=False, allow_blank=True)
+    worker_profile = WorkerProfileSerializer(required=False, write_only=True)
 
     class Meta: 
         model = tbl_user_profile
@@ -57,6 +60,7 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
             'verification_status', 
             'user_about',
             'user_tags',
+            'worker_profile',
         ]
         extra_kwargs = {
             'email': {
@@ -76,6 +80,7 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
         
         # 1. Take the password out of the data so we can securely hash it
         password = validated_data.pop('password')
+        worker_data = validated_data.pop('worker_profile', None)
 
         first_name = validated_data.get('first_name', '')
         middle_name = validated_data.get('middle_name', '')
@@ -87,9 +92,12 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
         validated_data['username'] = f"{combined}_{random_suffix}"
 
         try:
-            user = tbl_user_profile(**validated_data)
-            user.set_password(password)
-            user.save()
+            with transaction.atomic():
+                user = tbl_user_profile(**validated_data)
+                user.set_password(password)
+                user.save()
+                if user.account_type == 'Kasambahay':
+                    tbl_worker_profile.objects.create(user=user, **(worker_data or {}))
             return user
         except IntegrityError as e:
             err_str = str(e).lower()
@@ -104,6 +112,8 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
     def validate(self, attrs):
         attrs = super().validate(attrs)
         account_type = attrs.get('account_type')
+        if 'worker_profile' in attrs and account_type != 'Kasambahay':
+            raise serializers.ValidationError({'worker_profile': 'Worker details are only available for Kasambahay registration.'})
         barangay = attrs.get('barangay')
 
         if account_type == 'Barangay':
@@ -424,6 +434,19 @@ class UserTagsSerializer(serializers.ModelSerializer):
         model = tbl_user_profile
         fields = ['user_tags']
 
+    def update(self, instance, validated_data):
+        with transaction.atomic():
+            user = tbl_user_profile.objects.select_for_update().get(pk=instance.pk)
+            user = super().update(user, validated_data)
+            if user.account_type == 'Kasambahay' and 'user_tags' in validated_data:
+                from .worker_serializers import SERVICES
+                aliases = {'Child Care': 'Child_care', 'Childcare': 'Child_care', 'Cook': 'Cooking'}
+                categories = list(dict.fromkeys(aliases.get(tag, tag) for tag in user.user_tags if aliases.get(tag, tag) in SERVICES))
+                categories = ['All-around'] if 'All-around' in categories or all(value in categories for value in SERVICES[:5]) else categories
+                setup = next(({'Stay-In': 'stay_in', 'Stay-Out': 'stay_out', 'Either': 'either'}[tag] for tag in user.user_tags if tag in {'Stay-In', 'Stay-Out', 'Either'}), '')
+                tbl_worker_profile.objects.update_or_create(user=user, defaults={'service_categories': categories, 'work_setup': setup})
+            return user
+
 
 class ContactPrivacySerializer(serializers.ModelSerializer):
 
@@ -726,25 +749,6 @@ class PublicProfileSerializer(serializers.ModelSerializer):
         return get_signed_cloudinary_url(obj.profile_link, as_avatar=True)
 
     def get_resume_url(self, obj):
-        if not obj.resume_url or obj.account_type != 'Kasambahay':
-            return None
-        import cloudinary.utils
-        try:
-            if obj.resume_url.endswith('.pdf'):
-                temporary_url, _ = cloudinary.utils.cloudinary_url(
-                    obj.resume_url,
-                    resource_type="raw",
-                    type="authenticated",
-                    sign_url=True,
-                )
-            else:
-                temporary_url, _ = cloudinary.utils.cloudinary_url(
-                    obj.resume_url,
-                    resource_type="image",
-                    format="pdf",
-                    type="authenticated",
-                    sign_url=True,
-                )
-            return temporary_url
-        except Exception:
-            return None
+        # Shared profiles use the authenticated, privacy-filtered generated CV endpoint.
+        # Old uploaded files may contain details the worker no longer wants to share.
+        return None
