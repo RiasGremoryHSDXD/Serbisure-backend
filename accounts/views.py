@@ -183,15 +183,17 @@ class AdminUserListView(generics.ListAPIView):
     """
     Returns registered users formatted for the Admin User Directory dashboard.
     """
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated, IsPortalAdmin]
 
     def get(self, request, *args, **kwargs):
         role_param = request.query_params.get('role')
         barangay_param = request.query_params.get('barangay')
 
-        # Strictly lock LGU officers to their assigned barangay
-        if request.user.is_authenticated and getattr(request.user, 'account_type', None) == 'Barangay':
-            barangay_param = request.user.barangay
+        # Apply the shared saved-profile policy below; never infer jurisdiction from street text.
+        from chat.services import can_chat
+        is_barangay = request.user.account_type == 'Barangay'
+        if is_barangay:
+            barangay_param = None
 
         # Dynamic active LGU barangay set (accounts with account_type='Barangay')
         active_lgus = [
@@ -229,6 +231,8 @@ class AdminUserListView(generics.ListAPIView):
 
         data = []
         for u in users_qs:
+            if is_barangay and not can_chat(request.user, u):
+                continue
             if u.account_type == 'Barangay':
                 full_name = f"Brgy. {u.barangay} Officer" if u.barangay else (f"{u.first_name} {u.last_name}".strip() or u.username)
                 role_norm = 'BARANGAY'

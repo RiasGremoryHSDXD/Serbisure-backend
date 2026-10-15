@@ -6,10 +6,10 @@ import time
 from channels.db import database_sync_to_async
 from channels.generic.websocket import AsyncWebsocketConsumer
 from django.conf import settings
-from django.core.cache import cache
 from rest_framework_simplejwt.authentication import JWTAuthentication
 
 from .events import user_group
+from .presence import allowed_presence_ids, is_online, presence_group, update_presence, PRESENCE_TTL
 
 logger = logging.getLogger(__name__)
 
@@ -41,18 +41,13 @@ def authenticate(token):
 
 
 @database_sync_to_async
-def touch_presence(user_id):
-    cache.set(f'user_active_{user_id}', True, timeout=60)
-
-
-@database_sync_to_async
 def active_account(user_id):
     from django.contrib.auth import get_user_model
     return get_user_model().objects.filter(pk=user_id, is_active=True).exists()
 
 
 class UserEventsConsumer(AsyncWebsocketConsumer):
-    """One authenticated personal stream. No client-selected rooms or database writes."""
+    """Personal events and authorized presence watches; no message writes over sockets."""
     async def connect(self):
         self.user_id = None
         self.group = None
@@ -60,6 +55,8 @@ class UserEventsConsumer(AsyncWebsocketConsumer):
         self.window_start = time.monotonic()
         self.frames = 0
         self.expiry_task = None
+        self.watched_presence = set()
+        self.presence_registered = False
         if not origin_allowed(self.scope):
             logger.warning('WebSocket handshake rejected: untrusted Origin.')
             await self.close(code=4403)
@@ -107,17 +104,43 @@ class UserEventsConsumer(AsyncWebsocketConsumer):
             await self.channel_layer.group_add(self.group, self.channel_name)
             self.expiry_task = asyncio.create_task(self.close_after(self.expires - time.time(), 4401))
             self.last_check = time.monotonic()
-            await touch_presence(self.user_id)
+            self.presence_registered = True
+            await self.broadcast_presence(True)
             await self.send(text_data=json.dumps({'type': 'ready'}))
             return
         if not await self.authorized():
             return
         if content.get('type') == 'ping':
-            await touch_presence(self.user_id)
+            await self.broadcast_presence(True)
             await self.channel_layer.group_add(self.group, self.channel_name)
             await self.send(text_data=json.dumps({'type': 'pong'}))
+            await self.watch_presence(list(self.watched_presence))
+        elif content.get('type') == 'presence.watch':
+            try:
+                await self.watch_presence(content.get('partner_ids'))
+            except (ValueError, TypeError, AttributeError):
+                await self.close(code=4400)
         else:
             await self.close(code=4400)
+
+    async def broadcast_presence(self, connected):
+        online = await database_sync_to_async(update_presence)(self.user_id, self.channel_name, connected)
+        await self.channel_layer.group_send(presence_group(self.user_id), {
+            'type': 'user.event', 'event': {'type': 'presence.changed',
+                'partner_id': self.user_id, 'is_online': online, 'expires_in': PRESENCE_TTL},
+        })
+
+    async def watch_presence(self, requested):
+        allowed = await database_sync_to_async(allowed_presence_ids)(self.user_id, requested)
+        for partner_id in self.watched_presence - allowed:
+            await self.channel_layer.group_discard(presence_group(partner_id), self.channel_name)
+        for partner_id in allowed:
+            await self.channel_layer.group_add(presence_group(partner_id), self.channel_name)
+        self.watched_presence = allowed
+        for partner_id in allowed:
+            online = await database_sync_to_async(is_online)(partner_id)
+            await self.send(text_data=json.dumps({'type': 'presence.changed',
+                'partner_id': partner_id, 'is_online': online, 'expires_in': PRESENCE_TTL}))
 
     async def authorized(self):
         if time.time() >= self.expires:
@@ -132,6 +155,16 @@ class UserEventsConsumer(AsyncWebsocketConsumer):
 
     async def user_event(self, event):
         if self.user_id and await self.authorized():
+            if event['event'].get('type') == 'presence.changed':
+                partner_id = event['event'].get('partner_id')
+                if partner_id not in self.watched_presence:
+                    return
+                if not await database_sync_to_async(allowed_presence_ids)(self.user_id, [partner_id]):
+                    await self.channel_layer.group_discard(presence_group(partner_id), self.channel_name)
+                    self.watched_presence.discard(partner_id)
+                    return
+                # Concurrent workers may enqueue connect/disconnect events in either order.
+                event['event']['is_online'] = await database_sync_to_async(is_online)(partner_id)
             await self.send(text_data=json.dumps(event['event']))
 
     async def disconnect(self, close_code):
@@ -140,3 +173,7 @@ class UserEventsConsumer(AsyncWebsocketConsumer):
                 task.cancel()
         if self.group:
             await self.channel_layer.group_discard(self.group, self.channel_name)
+        for partner_id in self.watched_presence:
+            await self.channel_layer.group_discard(presence_group(partner_id), self.channel_name)
+        if self.presence_registered:
+            await self.broadcast_presence(False)

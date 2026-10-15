@@ -43,6 +43,50 @@ class RealtimeTests(TransactionTestCase):
         self.assertEqual(await socket.receive_json_from(), {'type': 'ready'})
         return socket
 
+    def test_presence_snapshot_connect_disconnect_and_multiple_tabs(self):
+        async def scenario():
+            admin = await self.connect()
+            await admin.send_json_to({'type': 'presence.watch', 'partner_ids': [str(self.partner.pk)]})
+            snapshot = await admin.receive_json_from()
+            self.assertEqual(snapshot['type'], 'presence.changed')
+            self.assertIs(snapshot['is_online'], False)
+            first = await self.connect(self.partner_token)
+            self.assertIs((await admin.receive_json_from())['is_online'], True)
+            second = await self.connect(self.partner_token)
+            self.assertIs((await admin.receive_json_from())['is_online'], True)
+            await first.disconnect()
+            self.assertIs((await admin.receive_json_from())['is_online'], True)
+            await second.disconnect()
+            self.assertIs((await admin.receive_json_from())['is_online'], False)
+            await admin.send_json_to({'type': 'presence.watch', 'partner_ids': []})
+            again = await self.connect(self.partner_token)
+            self.assertTrue(await admin.receive_nothing(timeout=0.1))
+            await again.disconnect(); await admin.disconnect()
+        async_to_sync(scenario)()
+
+    def test_presence_subscriptions_enforce_barangay_and_expose_no_private_messages(self):
+        staff = User.objects.create_user(username='presence_staff', email='presence_staff@example.test', password='Password123!', contact_number='+639123451118', account_type='Barangay', barangay='Pagatpat')
+        self.partner.barangay = 'Carmen'; self.partner.save(update_fields=['barangay'])
+        async def scenario():
+            socket = await self.connect(str(AccessToken.for_user(staff)))
+            await socket.send_json_to({'type': 'presence.watch', 'partner_ids': [str(self.partner.pk), str(self.user.pk)]})
+            event = await socket.receive_json_from()
+            self.assertEqual(event['partner_id'], str(self.user.pk))
+            worker = await self.connect(self.partner_token)
+            self.assertTrue(await socket.receive_nothing(timeout=0.1))
+            self.assertNotIn('message_payload', event)
+            await worker.disconnect(); await socket.disconnect()
+        async_to_sync(scenario)()
+
+    def test_presence_rejects_malformed_or_oversized_watch_requests(self):
+        async def scenario():
+            for ids in ('all', ['not-a-uuid'], [str(self.partner.pk)] * 101):
+                socket = await self.connect()
+                await socket.send_json_to({'type': 'presence.watch', 'partner_ids': ids})
+                self.assertEqual((await socket.receive_output())['code'], 4400)
+                await socket.disconnect()
+        async_to_sync(scenario)()
+
     def test_rest_saved_message_reaches_two_accounts_without_polling_or_exposing_payload(self):
         async def scenario():
             first = await self.connect(origin='http://localhost:3000')

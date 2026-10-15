@@ -8,9 +8,11 @@ from .views import (
     MarkMessageReadView,
     DeleteChatMessageView,
     ChatTypingView,
+    SupportContactsView,
 )
 
 urlpatterns = [
+    path('support-contacts/', SupportContactsView.as_view(), name='chat-support-contacts'),
     # POST   /api/v1/chat/send/                          → Send a new text message
     path('send/', SendMessageView.as_view(), name='chat-send'),
 

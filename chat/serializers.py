@@ -2,6 +2,7 @@ from rest_framework import serializers
 from .models import tbl_chat_message, tbl_chat_reaction, ALLOWED_EMOJIS
 from django.contrib.auth import get_user_model
 from core.utils import get_signed_cloudinary_url
+from .services import assert_chat_access
 import cloudinary.utils
 import time
 
@@ -48,6 +49,9 @@ class SendMessageSerializer(serializers.ModelSerializer):
         # 🚫 Defense-in-depth: Prevent sending message to yourself
         if request and receiver and request.user == receiver:
             raise serializers.ValidationError({"receiver_id": "You cannot send a message to yourself."})
+
+        if request and receiver:
+            assert_chat_access(request.user, receiver)
 
         booking = attrs.get('booking_id')
         if booking and booking.recipient_id_id and (not request or
@@ -148,6 +152,9 @@ class SendImageMessageSerializer(serializers.ModelSerializer):
         # 🚫 Prevent sending message to yourself (Edge Case #10)
         if request and receiver and request.user == receiver:
             raise serializers.ValidationError({"receiver_id": "You cannot send a message to yourself."})
+
+        if request and receiver:
+            assert_chat_access(request.user, receiver)
 
         booking = attrs.get('booking_id')
         if booking and booking.recipient_id_id and (not request or
@@ -289,6 +296,32 @@ class ChatInboxSerializer(serializers.Serializer):
 
     def get_partner_profile_image(self, obj):
         return get_signed_cloudinary_url(obj.get('partner_profile_link'), as_avatar=True)
+
+
+class SupportContactSerializer(serializers.Serializer):
+    id = serializers.UUIDField()
+    name = serializers.SerializerMethodField()
+    account_type = serializers.CharField()
+    barangay = serializers.CharField(allow_blank=True, allow_null=True)
+    avatar = serializers.SerializerMethodField()
+
+    def get_name(self, obj):
+        return obj.get_full_name().strip() or obj.username
+
+    def get_avatar(self, obj):
+        return get_signed_cloudinary_url(obj.profile_link, as_avatar=True)
+
+
+class BarangaySupportSerializer(serializers.Serializer):
+    name = serializers.CharField(allow_blank=True)
+    available = serializers.BooleanField()
+    contacts = SupportContactSerializer(many=True)
+    message = serializers.CharField(allow_blank=True)
+
+
+class SupportContactsSerializer(serializers.Serializer):
+    superadmins = SupportContactSerializer(many=True)
+    barangay = BarangaySupportSerializer()
 
 
 class MarkMessageReadSerializer(serializers.ModelSerializer):

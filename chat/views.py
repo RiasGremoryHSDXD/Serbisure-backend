@@ -8,16 +8,20 @@ from django.core.cache import cache
 from django.contrib.auth import get_user_model
 from django.db import transaction, IntegrityError
 from realtime.events import chat_changed, publish
+from realtime.presence import is_online
 from django.db.models import Q
+from django.shortcuts import get_object_or_404
 from core.utils import check_valid_uuid, get_signed_cloudinary_url
 from .models import tbl_chat_message, tbl_chat_reaction, ALLOWED_EMOJIS
+from .services import assert_chat_access, assert_message_access, can_chat, support_contacts
 from .serializers import (
     SendMessageSerializer,
     SendImageMessageSerializer,
     ReactMessageSerializer,
     ChatMessageSerializer,
     ChatInboxSerializer,
-    MarkMessageReadSerializer
+    MarkMessageReadSerializer,
+    SupportContactsSerializer,
 )
 import math
 import re
@@ -77,12 +81,15 @@ def _get_throttle_message(wait):
     return f"Too many requests. Please try again in {math.ceil(wait / 60)} minutes."
 
 
-def _is_barangay_to_barangay(sender, receiver_user):
-    """Returns True if a Barangay Admin is trying to message another Barangay Admin."""
-    return (
-        getattr(sender, 'account_type', None) == 'Barangay' and
-        getattr(receiver_user, 'account_type', None) == 'Barangay'
-    )
+class SupportContactsView(generics.GenericAPIView):
+    permission_classes = [IsAuthenticated]
+    throttle_classes = [ChatInboxThrottle]
+    serializer_class = SupportContactsSerializer
+
+    def get(self, request):
+        response = Response(self.get_serializer(support_contacts(request.user)).data)
+        response['Cache-Control'] = 'private, no-store'
+        return response
 
 
 # ─────────────────────────────────────────────
@@ -109,56 +116,42 @@ class SendMessageView(generics.CreateAPIView):
             )
 
         # Step 2: Check cache — prevent duplicate sends on network retry
-        cached_response = cache.get(f'chat_send_{idempotency_key}')
+        # Authorize against the current saved profiles even on a cached retry.
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        cached_response = cache.get(f'chat_send_{request.user.pk}_{idempotency_key}')
         if cached_response:
             return Response(cached_response['data'], status=cached_response['status'])
 
-        # RBAC: Block Barangay-to-Barangay messaging
-        _receiver_raw = request.data.get('receiver_id')
-        if _receiver_raw and check_valid_uuid(str(_receiver_raw)):
-            try:
-                _receiver_user = User.objects.get(id=_receiver_raw)
-                if _is_barangay_to_barangay(request.user, _receiver_user):
-                    return Response(
-                        {"detail": "Barangay admins are not authorized to message other Barangay admins."},
-                        status=status.HTTP_403_FORBIDDEN
-                    )
-            except User.DoesNotExist:
-                pass  # Let the serializer handle the missing receiver downstream
+        chat_msg = serializer.save(sender_id=request.user)
 
-        # Step 3: Validate serializer input
-        serializer = self.get_serializer(data=request.data)
-        if serializer.is_valid(raise_exception=True):
-            # Step 4: Save with sender set to authenticated user
-            chat_msg = serializer.save(sender_id=request.user)
-
-            # In-App Notification Trigger
-            try:
-                from notifications.services import send_in_app_notification
-                sender_name = f"{request.user.first_name} {request.user.last_name}".strip() or request.user.username
-                preview = (chat_msg.message_payload[:60] + '...') if len(chat_msg.message_payload) > 60 else chat_msg.message_payload
-                send_in_app_notification(
-                    receiver=chat_msg.receiver_id,
-                    sender=request.user,
-                    message=f"New message from {sender_name}: \"{preview}\""
-                )
-            except Exception:
-                pass
-
-            response_data = {
-                "message": "Message sent successfully.",
-                "data": serializer.data
-            }
-            response_status = status.HTTP_201_CREATED
-
-            # Step 5: Store in cache for 1 hour (idempotency window)
-            cache.set(
-                f'chat_send_{idempotency_key}',
-                {'data': response_data, 'status': response_status},
-                timeout=3600
+        # In-App Notification Trigger
+        try:
+            from notifications.services import send_in_app_notification
+            sender_name = f"{request.user.first_name} {request.user.last_name}".strip() or request.user.username
+            preview = (chat_msg.message_payload[:60] + '...') if len(chat_msg.message_payload) > 60 else chat_msg.message_payload
+            send_in_app_notification(
+                receiver=chat_msg.receiver_id,
+                sender=request.user,
+                message=f"New message from {sender_name}: \"{preview}\""
             )
+        except Exception:
+            pass
 
-            return Response(response_data, status=response_status)
+        response_data = {
+            "message": "Message sent successfully.",
+            "data": serializer.data
+        }
+        response_status = status.HTTP_201_CREATED
+
+        # Store in cache for 1 hour (idempotency window).
+        cache.set(
+            f'chat_send_{request.user.pk}_{idempotency_key}',
+            {'data': response_data, 'status': response_status},
+            timeout=3600
+        )
+
+        return Response(response_data, status=response_status)
 
     def throttled(self, request, wait):
         raise Throttled(detail=_get_throttle_message(wait))
@@ -189,11 +182,6 @@ class SendImageMessageView(generics.CreateAPIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # Step 2: Check cache — prevent duplicate sends on network retry (Edge Case #7, #33)
-        cached_response = cache.get(f'chat_send_image_{idempotency_key}')
-        if cached_response:
-            return Response(cached_response['data'], status=cached_response['status'])
-
         # Step 3: Check recipient user before upload (Edge Case #10, #11)
         receiver_raw = request.data.get('receiver_id')
         if not receiver_raw or not check_valid_uuid(str(receiver_raw)):
@@ -216,12 +204,10 @@ class SendImageMessageView(generics.CreateAPIView):
                 status=status.HTTP_404_NOT_FOUND
             )
 
-        # RBAC: Block Barangay-to-Barangay messaging
-        if _is_barangay_to_barangay(request.user, receiver_user):
-            return Response(
-                {"detail": "Barangay admins are not authorized to message other Barangay admins."},
-                status=status.HTTP_403_FORBIDDEN
-            )
+        assert_chat_access(request.user, receiver_user)
+        cached_response = cache.get(f'chat_send_image_{request.user.pk}_{idempotency_key}')
+        if cached_response:
+            return Response(cached_response['data'], status=cached_response['status'])
 
         # Step 4: Check image file input exists (Edge Case #5, #12)
         if 'image' not in request.FILES:
@@ -311,7 +297,7 @@ class SendImageMessageView(generics.CreateAPIView):
 
         # Step 11: Store in cache for 1 hour
         cache.set(
-            f'chat_send_image_{idempotency_key}',
+            f'chat_send_image_{request.user.pk}_{idempotency_key}',
             {'data': response_data, 'status': response_status},
             timeout=3600
         )
@@ -363,6 +349,7 @@ class ReactMessageView(generics.GenericAPIView):
             )
 
         # Step 4: Validate request body (Edge Case #16, #17, #18, #25)
+        assert_message_access(request.user, message)
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         emoji = serializer.validated_data['emoji']
@@ -459,6 +446,9 @@ class ChatMessageView(generics.ListAPIView):
         if not partner_id or not check_valid_uuid(str(partner_id)):
             raise ValidationError({"detail": "Invalid or missing partner UUID."})
 
+        partner = get_object_or_404(User, pk=partner_id)
+        assert_chat_access(current_user, partner)
+
         # Authorization guard: Fetch only messages between these two users
         return tbl_chat_message.objects.filter(
             Q(sender_id=current_user, receiver_id=partner_id) |
@@ -468,6 +458,8 @@ class ChatMessageView(generics.ListAPIView):
 
     def list(self, request, *args, **kwargs):
         partner_id = self.kwargs.get('partner_id')
+        # Check access before marking any messages read or publishing receipts.
+        queryset = self.filter_queryset(self.get_queryset())
         if partner_id and check_valid_uuid(str(partner_id)):
             read_count = tbl_chat_message.objects.filter(
                 sender_id=partner_id,
@@ -478,7 +470,6 @@ class ChatMessageView(generics.ListAPIView):
             if read_count:
                 chat_changed(partner_id, request.user.pk)
 
-        queryset = self.filter_queryset(self.get_queryset())
         page = self.paginate_queryset(queryset)
         if page is not None:
             serializer = self.get_serializer(page, many=True)
@@ -487,18 +478,16 @@ class ChatMessageView(generics.ListAPIView):
             serializer = self.get_serializer(queryset, many=True)
             response = Response({"data": serializer.data})
 
-        if request.user and request.user.is_authenticated:
-            cache.set(f'user_active_{request.user.id}', True, timeout=12)
-
         if partner_id and check_valid_uuid(str(partner_id)):
             cache_key = f'chat_typing_{partner_id}_{request.user.id}'
             is_partner_typing = bool(cache.get(cache_key))
-            is_partner_online = bool(cache.get(f'user_active_{partner_id}'))
+            is_partner_online = is_online(partner_id)
             if isinstance(response.data, dict):
                 response.data['partner_is_typing'] = is_partner_typing
                 response.data['partner_is_online'] = is_partner_online
             response['X-Partner-Is-Typing'] = 'true' if is_partner_typing else 'false'
-            response['X-Partner-Is-Online'] = 'true' if is_partner_online else 'false'
+            if is_partner_online is not None:
+                response['X-Partner-Is-Online'] = 'true' if is_partner_online else 'false'
 
         return response
 
@@ -538,10 +527,8 @@ class ChatInboxView(generics.GenericAPIView):
 
         inbox = []
 
-        for partner_id in partner_ids:
-            try:
-                partner = User.objects.get(id=partner_id)
-            except User.DoesNotExist:
+        for partner in User.objects.filter(pk__in=partner_ids, is_active=True):
+            if not can_chat(current_user, partner):
                 continue
 
             # Step 2: Get most recent message in the conversation
@@ -638,6 +625,8 @@ class MarkMessageReadView(generics.UpdateAPIView):
         if message.receiver_id != self.request.user:
             raise ValidationError({"detail": "You are not authorized to mark this message as read."})
 
+        assert_message_access(self.request.user, message)
+
         return message
 
     def patch(self, request, *args, **kwargs):
@@ -699,6 +688,7 @@ class DeleteChatMessageView(generics.GenericAPIView):
                 status=status.HTTP_403_FORBIDDEN
             )
 
+        assert_message_access(request.user, message)
         message.is_deleted = True
         message.save(update_fields=['is_deleted'])
 
@@ -731,8 +721,9 @@ class ChatTypingView(generics.GenericAPIView):
             raise ValidationError({'detail': 'A valid partner UUID is required.'})
         from django.contrib.auth import get_user_model
         partner = get_user_model().objects.filter(pk=partner_id, is_active=True).first()
-        if not partner or partner.pk == request.user.pk or _is_barangay_to_barangay(request.user, partner):
+        if not partner:
             raise ValidationError({'detail': 'This typing target is not permitted.'})
+        assert_chat_access(request.user, partner)
         if partner_id:
             cache_key = f'chat_typing_{request.user.id}_{partner_id}'
             if is_typing:
