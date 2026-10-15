@@ -24,6 +24,8 @@ class tbl_booking(models.Model):
         ('long_term', 'Long Term')
     )
 
+    WORK_SETUP_CHOICES = (('stay_in', 'Stay-in'), ('stay_out', 'Stay-out'))
+
     BOOKING_STATUS_CHOICES = (
         ('Pending', 'Pending'),
         ('Accepted', 'Accepted'),
@@ -52,6 +54,19 @@ class tbl_booking(models.Model):
         blank=False,
         null=False
     )
+
+    work_setup = models.CharField(
+        max_length=8, choices=WORK_SETUP_CHOICES, null=True, blank=True,
+        help_text='Agreed work setup; null only for legacy posts without an unambiguous setup.'
+    )
+
+    recipient_id = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+        related_name='received_booking_offers', null=True, blank=True)
+    offer_request_key = models.UUIDField(null=True, blank=True, editable=False)
+    offer_payload_hash = models.CharField(max_length=64, blank=True, default='', editable=False)
+    work_days = ArrayField(models.CharField(max_length=2, choices=[(day, day) for day in ['M', 'T', 'W', 'Th', 'F', 'S', 'Su']]), default=list, blank=True)
+    daily_start_time = models.TimeField(null=True, blank=True)
+    daily_end_time = models.TimeField(null=True, blank=True)
 
     booking_status = models.CharField(
         max_length=20,
@@ -138,7 +153,7 @@ class tbl_booking(models.Model):
         null=True
     )
 
-    daily_rate = models.DecimalField(
+    rate_amount = models.DecimalField(
         max_digits=10,
         decimal_places=2,
         validators=[
@@ -147,6 +162,11 @@ class tbl_booking(models.Model):
         null=False,
         blank=False
     )
+
+    rate_period = models.CharField(max_length=5, choices=[('day', 'Day'), ('month', 'Month')])
+    rate_needs_review = models.BooleanField(default=False)
+    started_at = models.DateTimeField(null=True, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
 
     createdAt = models.DateTimeField(
         auto_now_add=True
@@ -165,6 +185,11 @@ class tbl_booking(models.Model):
         db_table = 'tbl_booking'
 
         constraints = [
+            models.UniqueConstraint(fields=['poster_id', 'offer_request_key'], name='unique_chat_offer_request'),
+            CheckConstraint(
+                condition=Q(work_setup__isnull=True) | Q(work_setup__in=['stay_in', 'stay_out']),
+                name='valid_booking_work_setup',
+            ),
 
             CheckConstraint(
                 condition=Q(booking_type__in=['short_term', 'long_term']),
@@ -193,9 +218,14 @@ class tbl_booking(models.Model):
             ),
             
             CheckConstraint(
-                condition=Q(daily_rate__gte=Decimal('1.00')),
-                name='valid_daily_rate'
-            )
+                condition=Q(rate_amount__gte=Decimal('1.00')),
+                name='valid_rate_amount'
+            ),
+            CheckConstraint(
+                condition=(Q(booking_type='short_term', rate_period='day') |
+                           Q(booking_type='long_term', rate_period='month')),
+                name='booking_rate_period_matches_type'
+            ),
         ]
 
 class tbl_booking_assignment(models.Model):
@@ -220,6 +250,7 @@ class tbl_booking_assignment(models.Model):
 
     class Meta:
         db_table = 'tbl_booking_assignment'
+        constraints = [models.UniqueConstraint(fields=['booking_id'], name='one_assignment_per_booking')]
 
 
 class tbl_booking_proposal(models.Model):
@@ -266,4 +297,32 @@ class tbl_booking_proposal(models.Model):
                 condition=Q(proposed_rate__gte=Decimal('1.00')),
                 name='valid_proposal_rate'
             )
-        ]
+        ]
+
+
+class tbl_saved_post(models.Model):
+    saved_id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='saved_posts',
+        db_column='user_id'
+    )
+    booking = models.ForeignKey(
+        'tbl_booking',
+        on_delete=models.CASCADE,
+        related_name='saved_by_users',
+        db_column='booking_id'
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'tbl_saved_post'
+        constraints = [
+            models.UniqueConstraint(fields=['user', 'booking'], name='unique_user_saved_booking')
+        ]
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"User {self.user_id} saved {self.booking_id}"
+

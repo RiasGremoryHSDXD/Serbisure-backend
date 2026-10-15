@@ -1,4 +1,5 @@
 from django.urls import path
+from .worker_views import WorkerProfileView, WorkerCvView, WorkerCvExportView
 from rest_framework_simplejwt.views import TokenRefreshView
 from .views import (
     UserRegistrationView,
@@ -26,6 +27,9 @@ from .views import (
 )
 
 urlpatterns = [
+    path('worker-profile/', WorkerProfileView.as_view(), name='worker-profile'),
+    path('worker-cv/<uuid:user_id>/', WorkerCvView.as_view(), name='worker-cv'),
+    path('worker-cv/<uuid:user_id>/export/', WorkerCvExportView.as_view(), name='worker-cv-export'),
     # Registration Endpoints
     path('register/', UserRegistrationView.as_view(), name='register'),
     

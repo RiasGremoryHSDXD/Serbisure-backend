@@ -6,6 +6,40 @@ from django.core.exceptions import ValidationError
 from django.db.models.expressions import RawSQL
 import uuid 
 
+
+class tbl_worker_profile(models.Model):
+    """Self-reported worker preferences; separate from agreed booking terms."""
+    user = models.OneToOneField('tbl_user_profile', on_delete=models.CASCADE, related_name='worker_profile')
+    service_categories = models.JSONField(default=list, blank=True)
+    work_setup = models.CharField(max_length=10, blank=True, choices=[('stay_in', 'Stay-in'), ('stay_out', 'Stay-out'), ('either', 'Either')])
+    engagement_preference = models.CharField(max_length=10, blank=True, choices=[('short_term', 'Short-term'), ('long_term', 'Long-term'), ('both', 'Both')])
+    desired_monthly_rate = models.DecimalField(max_digits=8, decimal_places=2, null=True, blank=True)
+    desired_daily_rate = models.DecimalField(max_digits=8, decimal_places=2, null=True, blank=True)
+    civil_status = models.CharField(max_length=15, blank=True, choices=[(value, value) for value in ('Single', 'Married', 'Widowed', 'Separated')])
+    number_of_children = models.PositiveSmallIntegerField(null=True, blank=True)
+    experience_level = models.CharField(max_length=10, blank=True, choices=[('new', 'First-time worker'), ('household', 'Own household experience'), ('paid', 'Previous paid work')])
+    experience_duration = models.CharField(max_length=10, blank=True, choices=[('under_1', 'Less than 1 year'), ('1_to_3', '1-3 years'), ('over_3', 'More than 3 years')])
+    experience_summary = models.CharField(max_length=300, blank=True)
+    practical_skills = models.JSONField(default=list, blank=True)
+    available_from = models.DateField(null=True, blank=True)
+    available_days = models.JSONField(default=list, blank=True)
+    preferred_shifts = models.JSONField(default=list, blank=True)
+    preferred_work_areas = models.JSONField(default=list, blank=True)
+    education = models.CharField(max_length=100, blank=True)
+    training = models.JSONField(default=list, blank=True)
+    references_available = models.BooleanField(default=False)
+    share_family_details = models.BooleanField(default=False)
+    share_contact_details = models.BooleanField(default=False)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'tbl_worker_profile'
+        constraints = [
+            models.CheckConstraint(condition=Q(number_of_children__isnull=True) | Q(number_of_children__lte=99), name='worker_children_0_to_99'),
+            models.CheckConstraint(condition=Q(desired_monthly_rate__isnull=True) | Q(desired_monthly_rate__gt=0), name='worker_monthly_rate_positive'),
+            models.CheckConstraint(condition=Q(desired_daily_rate__isnull=True) | Q(desired_daily_rate__gt=0), name='worker_daily_rate_positive'),
+        ]
+
 def validate_user_tags(value):
 
     if not isinstance(value, list):

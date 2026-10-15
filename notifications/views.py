@@ -2,6 +2,7 @@ from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework import status
+from realtime.events import publish
 from .models import tbl_notification
 from .serializers import NotificationSerializer
 
@@ -49,6 +50,8 @@ class NotificationMarkAllReadView(APIView):
             receiver_id=request.user,
             notification_state='Unread'
         ).update(notification_state='Read')
+        if updated_count:
+            publish([request.user.pk], {'type': 'notifications.changed'})
         return Response({
             'status': 'success',
             'marked_count': updated_count

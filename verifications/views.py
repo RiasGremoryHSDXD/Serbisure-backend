@@ -197,7 +197,8 @@ class AdminVerificationQueueView(generics.ListAPIView):
     - ?status=PENDING | VERIFIED | REJECTED | NO_DOCUMENTS | ALL
     - ?barangay=Pagatpat | UNASSIGNED | ALL
     """
-    permission_classes = [AllowAny] # Permissive for easy admin dashboard integration
+    from .views_admin import IsAdminOrBarangay
+    permission_classes = [IsAuthenticated, IsAdminOrBarangay]
     serializer_class = AdminVerificationQueueSerializer
 
     def get_queryset(self):
@@ -205,25 +206,11 @@ class AdminVerificationQueueView(generics.ListAPIView):
         if doc_status and doc_status.upper() in ['NO_DOCUMENTS', 'UNSUBMITTED']:
             return tbl_documents.objects.none()
 
-        # 1. National ID: Exclude national_id_back if the user already has a national_id_front,
-        # ensuring National ID is represented as a single combined entry.
-        front_user_ids = tbl_documents.objects.filter(
-            document_type='national_id_front'
-        ).values_list('user_profile_id', flat=True)
+        # Every required document has its own review row and decision.
+        qs = tbl_documents.objects.select_related('user_profile').order_by('-created_at')
+        if self.request.user.account_type == 'Barangay':
+            qs = qs.filter(user_profile__barangay__iexact=(self.request.user.barangay or '').strip())
 
-        # 2. Kasambahay Statutory Clearances: Exclude police_clearance if the user already has
-        # an nbi_clearance, ensuring clearances are represented as a single combined package entry.
-        nbi_user_ids = tbl_documents.objects.filter(
-            document_type='nbi_clearance'
-        ).values_list('user_profile_id', flat=True)
-
-        qs = tbl_documents.objects.select_related('user_profile').exclude(
-            document_type='national_id_back',
-            user_profile_id__in=front_user_ids
-        ).exclude(
-            document_type='police_clearance',
-            user_profile_id__in=nbi_user_ids
-        ).order_by('-created_at')
         
         role = self.request.query_params.get('role')
         if role and role.upper() != 'ALL':
@@ -386,7 +373,8 @@ class AdminVerificationReviewView(generics.GenericAPIView):
         "rejection_reason": "Optional notes or reason for rejection"
     }
     """
-    permission_classes = [AllowAny]
+    from .views_admin import IsAdminOrBarangay
+    permission_classes = [IsAuthenticated, IsAdminOrBarangay]
 
     def post(self, request, document_id, *args, **kwargs):
         try:
@@ -402,31 +390,9 @@ class AdminVerificationReviewView(generics.GenericAPIView):
 
         user = document.user_profile
 
-        # Locate related package records to keep them in sync (e.g. National ID Front+Back or Kasambahay NBI+Police)
-        related_package_docs = tbl_documents.objects.none()
-        if document.document_type in ['national_id_front', 'national_id_back']:
-            related_package_docs = tbl_documents.objects.filter(
-                user_profile=user,
-                document_type__in=['national_id_front', 'national_id_back']
-            )
-        elif document.document_type in ['nbi_clearance', 'police_clearance']:
-            companion_type = 'police_clearance' if document.document_type == 'nbi_clearance' else 'nbi_clearance'
-            has_companion = tbl_documents.objects.filter(user_profile=user, document_type=companion_type).exists()
-            if has_companion:
-                related_package_docs = tbl_documents.objects.filter(
-                    user_profile=user,
-                    document_type__in=['nbi_clearance', 'police_clearance']
-                )
-
-        reviewer = request.user if (request.user and request.user.is_authenticated) else None
-        if not reviewer:
-            reviewer_identifier = (request.data.get('reviewer_email') or request.data.get('reviewer_username') or '').strip()
-            if reviewer_identifier:
-                from accounts.models import tbl_user_profile
-                from django.db.models import Q
-                reviewer = tbl_user_profile.objects.filter(
-                    Q(email__iexact=reviewer_identifier) | Q(username__iexact=reviewer_identifier)
-                ).first()
+        if request.user.account_type == 'Barangay' and (request.user.barangay or '').strip().casefold() != (user.barangay or '').strip().casefold():
+            return Response({'error': 'This document is outside your barangay.'}, status=403)
+        reviewer = request.user
 
         prev_status = document.verification_status
 
@@ -447,30 +413,6 @@ class AdminVerificationReviewView(generics.GenericAPIView):
                 reason=None,
                 request=request
             )
-
-            # If approving and a companion document exists, only auto-approve companions that are currently 'Pending'.
-            # CRITICAL: NEVER overwrite a companion document that has been explicitly Rejected!
-            if related_package_docs.exists():
-                pending_companions = related_package_docs.exclude(
-                    document_id=document.document_id
-                ).filter(verification_status='Pending')
-                for companion in pending_companions:
-                    record_audit_log(
-                        document=companion,
-                        action='APPROVED',
-                        actor=reviewer,
-                        target_user=user,
-                        previous_status=companion.verification_status,
-                        new_status='Verified',
-                        reason="Approved with package",
-                        request=request
-                    )
-                    companion.verification_status = 'Verified'
-                    companion.rejection_reason = None
-                    if reviewer:
-                        companion.verifyBy = reviewer
-                    companion.save()
-
 
             try:
                 from notifications.models import tbl_notification

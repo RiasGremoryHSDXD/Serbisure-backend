@@ -81,7 +81,7 @@ class DocumentUploadSerializer(serializers.ModelSerializer):
             'extracted_data': ocr_result.get('extracted_data', {}),
             'ocr_match_score': ocr_result.get('match_score'),
             'ocr_discrepancies': ocr_result.get('discrepancies', []),
-            'face_liveness_score': ocr_result.get('match_score'),
+            'face_liveness_score': None,  # OCR is never biometric evidence.
         }
 
         # Check if there is an existing rejected document to replace
@@ -204,29 +204,8 @@ class AdminVerificationQueueSerializer(serializers.ModelSerializer):
         ]
 
     def _get_companion_doc(self, obj):
-        if hasattr(obj, '_cached_companion_doc'):
-            return obj._cached_companion_doc
-
-        companion = None
-        if obj.document_type == 'national_id_front':
-            companion = tbl_documents.objects.filter(
-                user_profile=obj.user_profile,
-                document_type='national_id_back'
-            ).order_by('-created_at').first()
-        elif obj.document_type == 'national_id_back':
-            companion = tbl_documents.objects.filter(
-                user_profile=obj.user_profile,
-                document_type='national_id_front'
-            ).order_by('-created_at').first()
-        elif obj.document_type in ['nbi_clearance', 'police_clearance']:
-            other_type = 'police_clearance' if obj.document_type == 'nbi_clearance' else 'nbi_clearance'
-            companion = tbl_documents.objects.filter(
-                user_profile=obj.user_profile,
-                document_type=other_type
-            ).order_by('-created_at').first()
-
-        obj._cached_companion_doc = companion
-        return companion
+        # Independent records: package metadata must not mask another document's status.
+        return None
 
     def get_isPackage(self, obj):
         companion = self._get_companion_doc(obj)
@@ -561,8 +540,5 @@ class AdminVerificationQueueSerializer(serializers.ModelSerializer):
         return getattr(obj.user_profile, 'email', '')
 
     def get_faceLivenessMatchScore(self, obj):
-        if obj.face_liveness_score is not None:
-            return round(obj.face_liveness_score, 1)
-        if obj.ocr_match_score is not None:
-            return round(obj.ocr_match_score, 1)
-        return 99.2
+        # No server-authoritative biometric measurement is currently persisted.
+        return None

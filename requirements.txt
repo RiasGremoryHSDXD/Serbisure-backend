@@ -39,3 +39,8 @@ pytesseract>=0.3.13
 requests>=2.32.0
 whitenoise==6.12.0
 gunicorn>=22.0.0
+reportlab>=4.4,<5
+
+channels[daphne]==4.3.2
+channels-redis==4.3.0
+uvicorn[standard]==0.54.0

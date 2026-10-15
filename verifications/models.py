@@ -88,7 +88,7 @@ class tbl_documents(models.Model):
     ocr_match_score = models.FloatField(
         blank=True,
         null=True,
-        help_text="0.0-1.0 score indicating how well OCR data matches profile"
+        help_text="Document text matching percentage (0-100); null when evidence is unavailable"
     )
 
     ocr_discrepancies = models.JSONField(
