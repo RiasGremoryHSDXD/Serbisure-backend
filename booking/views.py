@@ -1,3 +1,4 @@
+from realtime.events import publish
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.throttling import UserRateThrottle
 from rest_framework.exceptions import Throttled, ValidationError, NotFound, PermissionDenied
@@ -598,6 +599,9 @@ class BookingProposalRespondView(APIView):
             if not tbl_booking_proposal.objects.filter(pk=proposal.pk, status='Pending').update(status='Rejected'):
                 raise ValidationError({'error': 'This proposal has already been resolved.'})
             proposal.refresh_from_db()
+            publish([proposal.proposer_id_id, booking.poster_id_id], {
+                'type': 'booking.changed', 'booking_id': str(booking.pk),
+            })
 
             # Notify proposer
             send_in_app_notification(

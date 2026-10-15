@@ -7,6 +7,7 @@ from rest_framework.parsers import MultiPartParser, FormParser
 from django.core.cache import cache
 from django.contrib.auth import get_user_model
 from django.db import transaction, IntegrityError
+from realtime.events import chat_changed, publish
 from django.db.models import Q
 from core.utils import check_valid_uuid, get_signed_cloudinary_url
 from .models import tbl_chat_message, tbl_chat_reaction, ALLOWED_EMOJIS
@@ -43,6 +44,10 @@ class ChatMessageThrottle(UserRateThrottle):
 class ChatInboxThrottle(UserRateThrottle):
     scope = 'chat_inbox'
     rate = '60/m'
+
+
+class ChatTypingThrottle(UserRateThrottle):
+    scope = 'chat_typing'
 
 
 class MarkMessageReadThrottle(UserRateThrottle):
@@ -464,12 +469,14 @@ class ChatMessageView(generics.ListAPIView):
     def list(self, request, *args, **kwargs):
         partner_id = self.kwargs.get('partner_id')
         if partner_id and check_valid_uuid(str(partner_id)):
-            tbl_chat_message.objects.filter(
+            read_count = tbl_chat_message.objects.filter(
                 sender_id=partner_id,
                 receiver_id=request.user,
                 is_read=False,
                 is_deleted=False
             ).update(is_read=True)
+            if read_count:
+                chat_changed(partner_id, request.user.pk)
 
         queryset = self.filter_queryset(self.get_queryset())
         page = self.paginate_queryset(queryset)
@@ -713,15 +720,25 @@ class ChatTypingView(generics.GenericAPIView):
     Cached with short TTL (5 seconds).
     """
     permission_classes = [IsAuthenticated]
+    throttle_classes = [ChatTypingThrottle]
 
     def post(self, request, *args, **kwargs):
         partner_id = request.data.get('partner_id')
         is_typing = request.data.get('is_typing', True)
-        if partner_id and check_valid_uuid(str(partner_id)):
+        if not isinstance(is_typing, bool):
+            raise ValidationError({'detail': 'is_typing must be a boolean.'})
+        if not partner_id or not check_valid_uuid(str(partner_id)):
+            raise ValidationError({'detail': 'A valid partner UUID is required.'})
+        from django.contrib.auth import get_user_model
+        partner = get_user_model().objects.filter(pk=partner_id, is_active=True).first()
+        if not partner or partner.pk == request.user.pk or _is_barangay_to_barangay(request.user, partner):
+            raise ValidationError({'detail': 'This typing target is not permitted.'})
+        if partner_id:
             cache_key = f'chat_typing_{request.user.id}_{partner_id}'
             if is_typing:
                 cache.set(cache_key, True, timeout=5)
             else:
                 cache.delete(cache_key)
+            publish([partner_id], {'type': 'chat.typing', 'partner_id': str(request.user.pk), 'is_typing': bool(is_typing)})
         return Response({"status": "ok"}, status=status.HTTP_200_OK)
 

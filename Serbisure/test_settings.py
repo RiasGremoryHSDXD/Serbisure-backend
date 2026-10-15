@@ -9,3 +9,5 @@ DATABASES['default']['TEST'] = {'NAME': 'test_serbisure_qa_' + uuid.uuid4().hex[
 
 # Speed up fixtures only. Production settings keep Django's normal password hashers.
 PASSWORD_HASHERS = ['django.contrib.auth.hashers.MD5PasswordHasher']
+
+CHANNEL_LAYERS = {'default': {'BACKEND': 'channels.layers.InMemoryChannelLayer'}}
