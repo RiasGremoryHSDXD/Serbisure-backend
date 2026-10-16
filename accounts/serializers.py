@@ -728,7 +728,12 @@ class PublicProfileSerializer(serializers.ModelSerializer):
 
     def to_representation(self, instance):
         data = super().to_representation(instance)
-        if getattr(instance, 'show_contact_number', False):
+        # Barangay and Superadmin profiles are official public desks. Their
+        # hotline is part of the desk contact information, so it remains
+        # available to authenticated users even when the resident privacy
+        # toggle is left at its default value.
+        is_official_desk = instance.account_type in ['Barangay', 'Admin']
+        if getattr(instance, 'show_contact_number', False) or is_official_desk:
             data['contact_number'] = instance.contact_number
             data['show_contact_number'] = True
         else:
