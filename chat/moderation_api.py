@@ -5,10 +5,13 @@ from django.utils import timezone
 from rest_framework import serializers
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.permissions import IsAuthenticated
+from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
 from rest_framework.throttling import UserRateThrottle
 from rest_framework.views import APIView
 from .moderation import may_manage, restriction_until, set_suspension
+from .access_audit import access_history
+from .models import ACCESS_ACTIONS, AccountAccessAudit
 
 
 class SuspensionInput(serializers.Serializer):
@@ -70,3 +73,37 @@ class UserSuspensionView(SafetyView):
         data.is_valid(raise_exception=True)
         target = set_suspension(request.user, user_id, **data.validated_data)
         return Response(SuspensionState(target, context={'request': request}).data)
+
+
+class AccessHistoryQuery(serializers.Serializer):
+    search = serializers.CharField(required=False, allow_blank=True, max_length=200)
+    barangay = serializers.CharField(required=False, allow_blank=True, max_length=255)
+    action = serializers.ChoiceField(choices=ACCESS_ACTIONS, required=False)
+    role = serializers.ChoiceField(choices=['Homeowner', 'Kasambahay'], required=False)
+    user_id = serializers.UUIDField(required=False)
+
+
+class AccessHistorySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = AccountAccessAudit
+        fields = ['log_id', 'actor_id_snapshot', 'actor_name', 'actor_role', 'actor_barangay',
+            'target_id_snapshot', 'target_name', 'target_role', 'target_barangay',
+            'action', 'previous_state', 'new_state', 'created_at']
+        read_only_fields = fields
+
+
+class AccessHistoryPagination(PageNumberPagination):
+    page_size = 5
+
+
+class AccessHistoryView(SafetyView):
+    """Read only. Entries are created exclusively by successful access changes."""
+    http_method_names = ['get', 'head', 'options']
+
+    def get(self, request):
+        query = AccessHistoryQuery(data=request.query_params)
+        query.is_valid(raise_exception=True)
+        records = access_history(request.user, query.validated_data)
+        pagination = AccessHistoryPagination()
+        page = pagination.paginate_queryset(records, request, view=self)
+        return pagination.get_paginated_response(AccessHistorySerializer(page, many=True).data)

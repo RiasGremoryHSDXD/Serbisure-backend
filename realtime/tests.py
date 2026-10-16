@@ -6,7 +6,7 @@ from asgiref.sync import async_to_sync
 from channels.db import database_sync_to_async
 from channels.testing import WebsocketCommunicator
 from django.contrib.auth import get_user_model
-from django.db import transaction
+from django.db import connection, transaction
 from django.test import TransactionTestCase, override_settings
 from django.utils import timezone
 from rest_framework.test import APIClient
@@ -23,6 +23,23 @@ User = get_user_model()
 
 @override_settings(REALTIME_ALLOWED_ORIGINS=['http://localhost:3000'])
 class RealtimeTests(TransactionTestCase):
+    def _fixture_teardown(self):
+        # TransactionTestCase truncates all tables after each test. Only the
+        # disposable, local test database may temporarily disable this guard;
+        # it stays enabled throughout test execution and in application code.
+        if connection.vendor != 'postgresql':
+            return super()._fixture_teardown()
+        if (not connection.settings_dict['NAME'].startswith('test_')
+                or connection.settings_dict['HOST'] not in ('localhost', '127.0.0.1', '::1')):
+            raise RuntimeError('Audit fixture cleanup requires an isolated local test database.')
+        with connection.cursor() as cursor:
+            cursor.execute('ALTER TABLE tbl_account_access_audit DISABLE TRIGGER account_access_audit_immutable')
+        try:
+            return super()._fixture_teardown()
+        finally:
+            with connection.cursor() as cursor:
+                cursor.execute('ALTER TABLE tbl_account_access_audit ENABLE TRIGGER account_access_audit_immutable')
+
     def setUp(self):
         self.user = User.objects.create_user(username='rtadmin', email='rtadmin@example.test', password='Password123!', contact_number='+639123451111', account_type='Admin', is_staff=True)
         self.partner = User.objects.create_user(username='rtworker', email='rtworker@example.test', password='Password123!', contact_number='+639123451112', account_type='Kasambahay')

@@ -19,6 +19,17 @@ def location_key(value, barangay=False):
     return ' '.join(value.split()).casefold()
 
 
+def jurisdiction_parts(profile):
+    return (location_key(profile.barangay, barangay=True),
+        re.sub(r'^city of\s+|\s+city$', '', location_key(profile.city)).strip(),
+        location_key(profile.province))
+
+
+def jurisdiction(profile):
+    key = jurisdiction_parts(profile)
+    return key if all(key) else None
+
+
 def same_barangay(left, right):
     name = location_key(left.barangay, barangay=True)
     if not name or name != location_key(right.barangay, barangay=True):

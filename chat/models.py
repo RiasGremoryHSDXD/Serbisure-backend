@@ -6,6 +6,74 @@ from django.db.models.expressions import RawSQL
 import base64
 import hashlib
 import uuid
+from django.core.exceptions import ValidationError
+
+
+ACCESS_ACTIONS = (
+    ('pause_chat', 'Messaging paused'),
+    ('resume_chat', 'Messaging resumed'),
+    ('suspend_account', 'Account suspended'),
+    ('restore_account', 'Account restored'),
+)
+
+
+class AppendOnlyQuerySet(models.QuerySet):
+    def update(self, **kwargs):
+        raise ValidationError('Account access history cannot be edited.')
+
+    def delete(self):
+        raise ValidationError('Account access history cannot be deleted.')
+
+    def bulk_update(self, objs, fields, batch_size=None):
+        raise ValidationError('Account access history cannot be edited.')
+
+
+class AccountAccessAudit(models.Model):
+    """Identity and jurisdiction snapshots survive profile edits and deletion.
+
+    Deliberately no foreign keys: account removal must never rewrite history.
+    Migration-installed database triggers also reject SQL UPDATE/DELETE/TRUNCATE.
+    """
+    log_id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    actor_id_snapshot = models.UUIDField(editable=False)
+    actor_name = models.CharField(max_length=255)
+    actor_role = models.CharField(max_length=50)
+    actor_barangay = models.CharField(max_length=255, blank=True)
+    target_id_snapshot = models.UUIDField(editable=False, db_index=True)
+    target_name = models.CharField(max_length=255)
+    target_role = models.CharField(max_length=50)
+    target_barangay = models.CharField(max_length=255, blank=True)
+    target_is_staff = models.BooleanField(default=False)
+    barangay_key = models.CharField(max_length=255, blank=True)
+    city_key = models.CharField(max_length=255, blank=True)
+    province_key = models.CharField(max_length=255, blank=True)
+    action = models.CharField(max_length=30, choices=ACCESS_ACTIONS)
+    previous_state = models.JSONField()
+    new_state = models.JSONField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    objects = AppendOnlyQuerySet.as_manager()
+
+    class Meta:
+        db_table = 'tbl_account_access_audit'
+        ordering = ['-created_at', '-log_id']
+        default_permissions = ('view',)
+        indexes = [
+            models.Index(fields=['-created_at', '-log_id'], name='access_audit_recent_idx'),
+            models.Index(fields=['barangay_key', 'city_key', 'province_key'], name='access_audit_scope_idx'),
+        ]
+        constraints = [models.CheckConstraint(
+            condition=Q(action__in=[value for value, _ in ACCESS_ACTIONS]), name='access_audit_valid_action')]
+
+    def save(self, *args, **kwargs):
+        if not self._state.adding or kwargs.get('update_fields') or kwargs.get('force_update'):
+            raise ValidationError('Account access history cannot be edited.')
+        # Always INSERT, including when a caller supplies an existing primary key.
+        kwargs['force_insert'] = True
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ValidationError('Account access history cannot be deleted.')
 
 
 def _get_cipher():

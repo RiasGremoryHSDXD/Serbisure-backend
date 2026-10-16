@@ -12,7 +12,7 @@ Successful send responses include `language_warning` only for the sender when ma
 
 - `chat_suspended_until`: nullable aware timestamp. Future timestamps block outgoing messages, images, typing, booking offers and proposals to residents. Expired timestamps are treated as inactive without a scheduled task. Clearing the field lifts the pause immediately.
 - `is_account_suspended`: blocks mobile/portal login, token refresh, existing JWT requests and websocket access until manually cleared. This freezes the whole account, including in-app support. Use a messaging pause when an appeal channel must remain open.
-- `suspended_by`: nullable self-reference identifying the official responsible for the latest manual control change. This is current-state accountability, not a historical event ledger. Official deletion sets this reference to null.
+- `suspended_by`: nullable self-reference identifying the official responsible for the latest manual control change. Official deletion sets this current-state reference to null; the independent access history preserves the original identity snapshot.
 
 Messaging-paused residents can still exchange text/images with their own eligible Barangay desk and any active SerbiSure Support account. An unavailable desk falls back to the existing Support contact. Original chats and screenshots remain subject to normal chat participant permissions; no official gains access to another pair's conversation.
 
@@ -29,10 +29,26 @@ Barangay controls require a current active unsuspended officer and a resident wi
 - Restoring account access does not implicitly clear a separate chat pause; lifting a chat pause does not restore a fully suspended account.
 - Booking cancellation strikes and booking restrictions are unchanged.
 
+## Read-only account access history
+
+The Account Access page has **Accounts** and **Access history** views for both Superadmin and Barangay accounts. History has name/official/barangay search, an action filter, ten entries per page, and expandable previous/new values. It has no create, edit or delete controls. Successful access changes create records automatically; officials cannot submit arbitrary log entries.
+
+`chat.AccountAccessAudit` (`tbl_account_access_audit`) stores one immutable event for each actual manual state transition: messaging pause, messaging resumption, account suspension, or account restoration. Each event snapshots actor and target UUIDs, names, roles and barangays; normalized target jurisdiction and staff eligibility; previous/new account-suspension and pause-expiry values; and the event timestamp. No private conversation content is recorded. UUID snapshots are intentionally not foreign keys, so deleting or renaming a profile cannot cascade into history. The target's jurisdiction at the time of the action determines local visibility even if the target subsequently moves.
+
+The access update and its audit insert run in the same transaction under the existing ordered account row locks. Audit insertion failure rolls back the access update; realtime events publish only after commit. Failed/unauthorized requests, reads, and unchanged duplicate actions do not create successful-change entries. Natural pause expiry needs no background mutation: the original event already records its expiry. Historical changes before migration 0010 are not reconstructed or backfilled.
+
+GET `/api/v1/chat/safety/history/` returns `{count, next, previous, results}` in newest-first order, ten results per page. Supported query parameters are `page`, `search` (up to 200 characters), `action`, resident `role`, `user_id`, and Superadmin-only `barangay`. Active, unsuspended Superadmins can read all access history, including staff actions. Barangay officers can read only nonstaff resident events with a complete, matching normalized barangay/city/province snapshot. Client parameters cannot widen this scope. Responses use `Cache-Control: private, no-store`. Only GET/HEAD/OPTIONS are enabled; POST/PUT/PATCH/DELETE are rejected. This history grants no access to residents' chats.
+
+Model and queryset operations reject edits/deletion. PostgreSQL triggers independently reject UPDATE, DELETE and TRUNCATE, including direct SQL; SQLite has corresponding UPDATE/DELETE triggers. Django admin exposes only jurisdiction-scoped read access. This protects ordinary application/database operations; a database owner can still deliberately alter the schema or disable triggers and should be restricted operationally. The isolated realtime test fixture briefly disables the trigger only during test-table cleanup, after checking the disposable database name and loopback host. It remains enabled during tests and application execution.
+
 ## Migration and testing
 
 Run `python manage.py migrate` when deploying the coordinated backend update. Accounts migration 0020 adds the three fields. Chat migration 0009 removes the superseded report/audit/blocked-attempt/restriction tables; migrations 0007/0008 remain as applied schema history. Retire any previously configured evidence-purge cron, because it is no longer part of this design. Review/back up any old report data before applying the removal to a hosted database. Local report test data was already reset by request.
 
+Chat migration **0010_account_access_audit** adds only the new access-history table, indexes, constraints and append-only database triggers. Apply it before deploying the matching portal/backend code. It does not change existing suspension state or document-verification audit records. A deliberate migration reversal removes its protection and drops this table, so do not reverse it as a routine rollback after records exist.
+
 Validation: `python manage.py test chat.test_moderation chat.test_support_access chat.test_unread_inbox chat.tests realtime.tests booking.tests --settings=Serbisure.test_settings --noinput`, admin `node --test tests/*.test.cjs` and `npm run build`, mobile `npm run typecheck` plus module/chat tests. Test settings enforce a loopback PostgreSQL host and use an isolated temporary database.
 
 Manual check: send a matching word and verify both ends show masked text and only the sender sees Notice; send a screenshot directly to Support; pause a resident and confirm peer sends fail while own-desk and support sends succeed; confirm other-barangay controls fail; lift the pause; suspend/restore account access separately.
+
+Access history checks: `python manage.py test chat.test_access_audit chat.test_moderation chat.test_support_access chat.test_unread_inbox realtime.tests --settings=Serbisure.test_settings --noinput`; portal `node --test tests/access-history.test.cjs tests/account-access.test.cjs` and `npm run build`. Check that each successful access change appears in Access history, authorized scopes remain isolated, and failed logging never leaves an unaudited suspension.

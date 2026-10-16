@@ -1,12 +1,12 @@
 """Manual account controls and outgoing sanitization. No automated penalties."""
-import re
 from django.contrib.auth import get_user_model
 from django.db import transaction
 from django.utils import timezone
 from rest_framework.exceptions import APIException, PermissionDenied
 from realtime.events import publish
 from .moderation_rules import mask_text
-from .services import RESIDENT_ROLES, can_chat, is_superadmin, location_key
+from .services import RESIDENT_ROLES, can_chat, is_superadmin, jurisdiction
+from .access_audit import record_access_change
 
 LANGUAGE_NOTICE = ('Inappropriate or threatening language was detected in your message. '
     'Please communicate respectfully. Harassment and threats can be reported to your Barangay '
@@ -43,13 +43,6 @@ def inspect_outgoing(user, partner, text, request_key='', channel='message'):
     return mask_text(text or '')
 
 
-def jurisdiction(profile):
-    barangay = location_key(profile.barangay, barangay=True)
-    city = re.sub(r'^city of\s+|\s+city$', '', location_key(profile.city)).strip()
-    province = location_key(profile.province)
-    return (barangay, city, province) if all((barangay, city, province)) else None
-
-
 def may_manage(actor, target):
     if not actor.is_active or actor.is_account_suspended or actor.pk == target.pk:
         return False
@@ -67,6 +60,10 @@ def set_suspension(actor, target_id, action, until=None):
     actor, target = users.get(actor.pk), users.get(target_id)
     if not actor or not target or not may_manage(actor, target):
         raise PermissionDenied('You may only manage eligible accounts within your jurisdiction.')
+    def snapshot():
+        return {'chat_suspended_until': target.chat_suspended_until.isoformat() if target.chat_suspended_until else None,
+                'is_account_suspended': target.is_account_suspended}
+    before = snapshot()
     if action == 'pause_chat':
         target.chat_suspended_until = until
     elif action == 'resume_chat':
@@ -75,7 +72,13 @@ def set_suspension(actor, target_id, action, until=None):
         target.is_account_suspended = True
     elif action == 'restore_account':
         target.is_account_suspended = False
+    else:
+        raise ValueError('Unsupported suspension action.')
+    after = snapshot()
+    if before == after:
+        return target
     target.suspended_by = actor
     target.save(update_fields=['chat_suspended_until', 'is_account_suspended', 'suspended_by'])
+    record_access_change(actor, target, action, before, after)
     publish([target.pk, actor.pk], {'type': 'moderation.changed'})
     return target

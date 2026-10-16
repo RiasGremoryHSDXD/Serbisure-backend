@@ -237,6 +237,29 @@ This document outlines the database schema, models, field types, and choices (en
 
 ## Chat App
 
+### `AccountAccessAudit`
+- **Database Table:** `tbl_account_access_audit`
+
+| Field Name | Data Type | Constraints / Choices / FK |
+| --- | --- | --- |
+| `log_id` | `UUIDField` | Primary Key, Unique |
+| `actor_id_snapshot` | `UUIDField` | - |
+| `actor_name` | `CharField` | - |
+| `actor_role` | `CharField` | - |
+| `actor_barangay` | `CharField` | Blank=True |
+| `target_id_snapshot` | `UUIDField` | - |
+| `target_name` | `CharField` | - |
+| `target_role` | `CharField` | - |
+| `target_barangay` | `CharField` | Blank=True |
+| `target_is_staff` | `BooleanField` | - |
+| `barangay_key` | `CharField` | Blank=True |
+| `city_key` | `CharField` | Blank=True |
+| `province_key` | `CharField` | Blank=True |
+| `action` | `CharField` | Choices: ['pause_chat', 'resume_chat', 'suspend_account', 'restore_account'] |
+| `previous_state` | `JSONField` | - |
+| `new_state` | `JSONField` | - |
+| `created_at` | `DateTimeField` | Blank=True |
+
 ### `tbl_chat_message`
 - **Database Table:** `tbl_chat_message`
 
