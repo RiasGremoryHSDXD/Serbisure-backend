@@ -28,7 +28,12 @@ from drf_spectacular.utils import extend_schema, OpenApiParameter
 from drf_spectacular.types import OpenApiTypes
 
 class RegistrationThrottle(AnonRateThrottle):
-    rate = '5/d'
+    # Separate from login's anonymous counter and the previous daily limit.
+    scope = 'registration_5min'
+    rate = 'custom'
+
+    def parse_rate(self, rate):
+        return (5, 300)
 
 class UserRegistrationView(APIView):
 
@@ -113,16 +118,18 @@ class UserRegistrationView(APIView):
             status=status.HTTP_400_BAD_REQUEST
         )
     
-    def throttled(self, request, wait):        
-        # 3600 seconds = 1 hour
-        if wait > 3600: 
-            time_left = math.ceil(wait / 3600)
-            custom_message = f"Too many attempts. Please try again in {time_left} hours."
-
-        else:
-            custom_message = f"Too many attempts. Please try again in {math.ceil(wait/60)} minutes."
-
-        raise Throttled(detail=custom_message)
+    def throttled(self, request, wait):
+        seconds = max(1, math.ceil(wait if wait is not None else 300))
+        minutes = math.ceil(seconds / 60)
+        unit = 'minute' if minutes == 1 else 'minutes'
+        message = (
+            'No account was created by this attempt. Too many registration attempts. '
+            f'Please try again in {minutes} {unit}.'
+        )
+        error = Throttled(detail=message, code='registration_throttled')
+        # Preserve Retry-After without adding DRF's technical seconds suffix.
+        error.wait = seconds
+        raise error
 
 
 class LoginThrottle(AnonRateThrottle):
