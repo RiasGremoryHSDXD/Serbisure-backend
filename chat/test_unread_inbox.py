@@ -14,8 +14,8 @@ class PortalUnreadInboxTests(TestCase):
         self.client = APIClient()
         self.admin = User.objects.create_user(username='portaladmin', email='admin@example.test', password='Password123!', contact_number='+639123456701', account_type='Admin', is_staff=True, is_superuser=True)
         self.officer = User.objects.create_user(username='portalofficer', email='officer@example.test', password='Password123!', contact_number='+639123456702', account_type='Barangay', barangay='Agusan')
-        self.home = User.objects.create_user(username='home', email='home@example.test', password='Password123!', contact_number='+639123456703', account_type='Homeowner')
-        self.worker = User.objects.create_user(username='worker', email='worker@example.test', password='Password123!', contact_number='+639123456704', account_type='Kasambahay')
+        self.home = User.objects.create_user(username='home', email='home@example.test', password='Password123!', contact_number='+639123456703', account_type='Homeowner', barangay='Agusan')
+        self.worker = User.objects.create_user(username='worker', email='worker@example.test', password='Password123!', contact_number='+639123456704', account_type='Kasambahay', barangay='Agusan')
 
     def message(self, sender, receiver, **kwargs):
         return tbl_chat_message.objects.create(sender_id=sender, receiver_id=receiver, message_payload='Hello', **kwargs)

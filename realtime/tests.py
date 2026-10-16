@@ -6,7 +6,7 @@ from asgiref.sync import async_to_sync
 from channels.db import database_sync_to_async
 from channels.testing import WebsocketCommunicator
 from django.contrib.auth import get_user_model
-from django.db import transaction
+from django.db import connection, transaction
 from django.test import TransactionTestCase, override_settings
 from django.utils import timezone
 from rest_framework.test import APIClient
@@ -23,6 +23,23 @@ User = get_user_model()
 
 @override_settings(REALTIME_ALLOWED_ORIGINS=['http://localhost:3000'])
 class RealtimeTests(TransactionTestCase):
+    def _fixture_teardown(self):
+        # TransactionTestCase truncates all tables after each test. Only the
+        # disposable, local test database may temporarily disable this guard;
+        # it stays enabled throughout test execution and in application code.
+        if connection.vendor != 'postgresql':
+            return super()._fixture_teardown()
+        if (not connection.settings_dict['NAME'].startswith('test_')
+                or connection.settings_dict['HOST'] not in ('localhost', '127.0.0.1', '::1')):
+            raise RuntimeError('Audit fixture cleanup requires an isolated local test database.')
+        with connection.cursor() as cursor:
+            cursor.execute('ALTER TABLE tbl_account_access_audit DISABLE TRIGGER account_access_audit_immutable')
+        try:
+            return super()._fixture_teardown()
+        finally:
+            with connection.cursor() as cursor:
+                cursor.execute('ALTER TABLE tbl_account_access_audit ENABLE TRIGGER account_access_audit_immutable')
+
     def setUp(self):
         self.user = User.objects.create_user(username='rtadmin', email='rtadmin@example.test', password='Password123!', contact_number='+639123451111', account_type='Admin', is_staff=True)
         self.partner = User.objects.create_user(username='rtworker', email='rtworker@example.test', password='Password123!', contact_number='+639123451112', account_type='Kasambahay')
@@ -42,6 +59,50 @@ class RealtimeTests(TransactionTestCase):
         await socket.send_json_to({'type': 'authenticate', 'token': token or self.token})
         self.assertEqual(await socket.receive_json_from(), {'type': 'ready'})
         return socket
+
+    def test_presence_snapshot_connect_disconnect_and_multiple_tabs(self):
+        async def scenario():
+            admin = await self.connect()
+            await admin.send_json_to({'type': 'presence.watch', 'partner_ids': [str(self.partner.pk)]})
+            snapshot = await admin.receive_json_from()
+            self.assertEqual(snapshot['type'], 'presence.changed')
+            self.assertIs(snapshot['is_online'], False)
+            first = await self.connect(self.partner_token)
+            self.assertIs((await admin.receive_json_from())['is_online'], True)
+            second = await self.connect(self.partner_token)
+            self.assertIs((await admin.receive_json_from())['is_online'], True)
+            await first.disconnect()
+            self.assertIs((await admin.receive_json_from())['is_online'], True)
+            await second.disconnect()
+            self.assertIs((await admin.receive_json_from())['is_online'], False)
+            await admin.send_json_to({'type': 'presence.watch', 'partner_ids': []})
+            again = await self.connect(self.partner_token)
+            self.assertTrue(await admin.receive_nothing(timeout=0.1))
+            await again.disconnect(); await admin.disconnect()
+        async_to_sync(scenario)()
+
+    def test_presence_subscriptions_enforce_barangay_and_expose_no_private_messages(self):
+        staff = User.objects.create_user(username='presence_staff', email='presence_staff@example.test', password='Password123!', contact_number='+639123451118', account_type='Barangay', barangay='Pagatpat')
+        self.partner.barangay = 'Carmen'; self.partner.save(update_fields=['barangay'])
+        async def scenario():
+            socket = await self.connect(str(AccessToken.for_user(staff)))
+            await socket.send_json_to({'type': 'presence.watch', 'partner_ids': [str(self.partner.pk), str(self.user.pk)]})
+            event = await socket.receive_json_from()
+            self.assertEqual(event['partner_id'], str(self.user.pk))
+            worker = await self.connect(self.partner_token)
+            self.assertTrue(await socket.receive_nothing(timeout=0.1))
+            self.assertNotIn('message_payload', event)
+            await worker.disconnect(); await socket.disconnect()
+        async_to_sync(scenario)()
+
+    def test_presence_rejects_malformed_or_oversized_watch_requests(self):
+        async def scenario():
+            for ids in ('all', ['not-a-uuid'], [str(self.partner.pk)] * 101):
+                socket = await self.connect()
+                await socket.send_json_to({'type': 'presence.watch', 'partner_ids': ids})
+                self.assertEqual((await socket.receive_output())['code'], 4400)
+                await socket.disconnect()
+        async_to_sync(scenario)()
 
     def test_rest_saved_message_reaches_two_accounts_without_polling_or_exposing_payload(self):
         async def scenario():
@@ -211,4 +272,21 @@ class RealtimeTests(TransactionTestCase):
             self.assertEqual({event['type'] for event in events}, {'booking.changed', 'chat.changed'})
             self.assertEqual(next(event for event in events if event['type'] == 'booking.changed')['booking_id'], str(booking.pk))
             await socket.disconnect()
+        async_to_sync(scenario)()
+
+
+    def test_full_suspension_closes_existing_socket_and_rejects_reconnect(self):
+        from chat.moderation import set_suspension
+        async def scenario():
+            socket = await self.connect(self.partner_token)
+            await database_sync_to_async(set_suspension)(self.user, self.partner.pk, 'suspend_account')
+            close = await socket.receive_output()
+            self.assertEqual(close['type'], 'websocket.close')
+            self.assertEqual(close['code'], 4403)
+            await socket.disconnect()
+            retry = WebsocketCommunicator(application, '/ws/events/')
+            self.assertTrue((await retry.connect())[0])
+            await retry.send_json_to({'type': 'authenticate', 'token': self.partner_token})
+            self.assertEqual((await retry.receive_output())['type'], 'websocket.close')
+            await retry.disconnect()
         async_to_sync(scenario)()

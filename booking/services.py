@@ -106,6 +106,8 @@ def accept_engagement(booking_id, actor, proposal_id=None):
 def create_proposal(booking_id, actor, amount, period, message):
     preview = get_object_or_404(tbl_booking, pk=booking_id)
     people = lock_participants(preview.poster_id_id, actor.pk)
+    from chat.moderation import inspect_outgoing
+    message = inspect_outgoing(people[actor.pk], people[preview.poster_id_id], message, channel='proposal')
     booking = get_object_or_404(tbl_booking.objects.select_for_update(), pk=booking_id)
     ensure_eligible_pair(people[booking.poster_id_id], people[actor.pk])
     if booking.recipient_id_id and booking.recipient_id_id != actor.pk:

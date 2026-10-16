@@ -11,3 +11,5 @@ DATABASES['default']['TEST'] = {'NAME': 'test_serbisure_qa_' + uuid.uuid4().hex[
 PASSWORD_HASHERS = ['django.contrib.auth.hashers.MD5PasswordHasher']
 
 CHANNEL_LAYERS = {'default': {'BACKEND': 'channels.layers.InMemoryChannelLayer'}}
+# Presence tests must never use a developer's remote Redis instance.
+REDIS_URL = None

@@ -28,7 +28,12 @@ from drf_spectacular.utils import extend_schema, OpenApiParameter
 from drf_spectacular.types import OpenApiTypes
 
 class RegistrationThrottle(AnonRateThrottle):
-    rate = '5/d'
+    # Separate from login's anonymous counter and the previous daily limit.
+    scope = 'registration_5min'
+    rate = 'custom'
+
+    def parse_rate(self, rate):
+        return (5, 300)
 
 class UserRegistrationView(APIView):
 
@@ -113,16 +118,18 @@ class UserRegistrationView(APIView):
             status=status.HTTP_400_BAD_REQUEST
         )
     
-    def throttled(self, request, wait):        
-        # 3600 seconds = 1 hour
-        if wait > 3600: 
-            time_left = math.ceil(wait / 3600)
-            custom_message = f"Too many attempts. Please try again in {time_left} hours."
-
-        else:
-            custom_message = f"Too many attempts. Please try again in {math.ceil(wait/60)} minutes."
-
-        raise Throttled(detail=custom_message)
+    def throttled(self, request, wait):
+        seconds = max(1, math.ceil(wait if wait is not None else 300))
+        minutes = math.ceil(seconds / 60)
+        unit = 'minute' if minutes == 1 else 'minutes'
+        message = (
+            'No account was created by this attempt. Too many registration attempts. '
+            f'Please try again in {minutes} {unit}.'
+        )
+        error = Throttled(detail=message, code='registration_throttled')
+        # Preserve Retry-After without adding DRF's technical seconds suffix.
+        error.wait = seconds
+        raise error
 
 
 class LoginThrottle(AnonRateThrottle):
@@ -183,15 +190,19 @@ class AdminUserListView(generics.ListAPIView):
     """
     Returns registered users formatted for the Admin User Directory dashboard.
     """
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated, IsPortalAdmin]
 
     def get(self, request, *args, **kwargs):
         role_param = request.query_params.get('role')
         barangay_param = request.query_params.get('barangay')
+        manage_access = request.query_params.get('access_management') == '1'
 
-        # Strictly lock LGU officers to their assigned barangay
-        if request.user.is_authenticated and getattr(request.user, 'account_type', None) == 'Barangay':
-            barangay_param = request.user.barangay
+        # Apply the shared saved-profile policy below; never infer jurisdiction from street text.
+        from chat.services import can_chat, location_key
+        from chat.moderation import may_manage
+        is_barangay = request.user.account_type == 'Barangay'
+        if is_barangay:
+            barangay_param = None
 
         # Dynamic active LGU barangay set (accounts with account_type='Barangay')
         active_lgus = [
@@ -202,7 +213,9 @@ class AdminUserListView(generics.ListAPIView):
         ]
         active_lgus_lower = [b.lower() for b in active_lgus]
 
-        if role_param and role_param.upper() in ['BARANGAY', 'ADMIN']:
+        if manage_access:
+            users_qs = tbl_user_profile.objects.filter(account_type__in=['Homeowner', 'Kasambahay']).prefetch_related('documents').order_by('first_name', 'last_name', 'pk')
+        elif role_param and role_param.upper() in ['BARANGAY', 'ADMIN']:
             users_qs = tbl_user_profile.objects.filter(account_type='Barangay').order_by('barangay')
         elif role_param and role_param.upper() == 'SUPERADMIN':
             users_qs = tbl_user_profile.objects.filter(account_type='Admin').order_by('-date_joined')
@@ -212,7 +225,7 @@ class AdminUserListView(generics.ListAPIView):
                 users_qs = users_qs.filter(account_type__iexact=role_param)
 
         from django.db.models import Q
-        if barangay_param:
+        if barangay_param and not manage_access:
             if barangay_param.upper() in ['UNASSIGNED', 'NO LGU COVERAGE', 'NO_LGU']:
                 # Exclude all users that belong to active LGU barangays
                 q_assigned = Q()
@@ -229,6 +242,21 @@ class AdminUserListView(generics.ListAPIView):
 
         data = []
         for u in users_qs:
+            if manage_access:
+                # Include suspended/deactivated residents for restoration, while enforcing
+                # the same strict authority as the suspension mutation endpoint.
+                if not may_manage(request.user, u):
+                    continue
+                if barangay_param and barangay_param.upper() not in ['ALL', 'ALL BARANGAYS']:
+                    key = location_key(u.barangay, barangay=True)
+                    if barangay_param.upper() in ['UNASSIGNED', 'NO LGU COVERAGE', 'NO_LGU']:
+                        covered = {location_key(b, barangay=True) for b in active_lgus}
+                        if key and key in covered:
+                            continue
+                    elif key != location_key(barangay_param, barangay=True):
+                        continue
+            elif is_barangay and not can_chat(request.user, u):
+                continue
             if u.account_type == 'Barangay':
                 full_name = f"Brgy. {u.barangay} Officer" if u.barangay else (f"{u.first_name} {u.last_name}".strip() or u.username)
                 role_norm = 'BARANGAY'
@@ -249,7 +277,7 @@ class AdminUserListView(generics.ListAPIView):
             is_verified = (u.verification_status == 'Verified') or (u.account_type in ['Barangay', 'Admin'])
 
             brgy = (u.barangay or '').strip()
-            if not brgy:
+            if not brgy and not manage_access:
                 street_lower = (u.street or '').lower()
                 city_lower = (u.city or '').lower()
                 for b in active_lgus:
@@ -273,7 +301,8 @@ class AdminUserListView(generics.ListAPIView):
                 "city": u.city or "Cagayan de Oro City",
                 "verified": is_verified,
                 "hasLguCoverage": has_lgu_coverage,
-                "status": "ACTIVE" if u.is_active else "SUSPENDED",
+                "status": "ACTIVE" if u.is_active and not u.is_account_suspended else "SUSPENDED",
+                "canManageSuspension": may_manage(request.user, u),
                 "joinedDate": u.date_joined.strftime('%b %d, %Y') if u.date_joined else "Recent",
                 "completedJobs": 0,
                 "sentimentScore": {
@@ -283,12 +312,21 @@ class AdminUserListView(generics.ListAPIView):
                 },
                 "ra10361Compliant": True,
             }
+            if manage_access:
+                user_item.update({
+                    'chatSuspendedUntil': u.chat_suspended_until.isoformat() if u.chat_suspended_until else None,
+                    'isAccountSuspended': u.is_account_suspended,
+                    'isAccountActive': u.is_active,
+                })
             social_links_raw = getattr(u, 'social_links', []) or []
             show_links = getattr(u, 'show_social_links', True)
             user_item["socialLinks"] = social_links_raw if show_links else []
             data.append(user_item)
 
-        return Response(data, status=status.HTTP_200_OK)
+        response = Response(data, status=status.HTTP_200_OK)
+        if manage_access:
+            response['Cache-Control'] = 'private, no-store'
+        return response
 
 
 class AdminDashboardStatsView(APIView):
@@ -630,6 +668,9 @@ class AdminLoginView(APIView):
         if not user.is_active:
             return Response({'error': 'This administrative account has been deactivated.'}, status=status.HTTP_403_FORBIDDEN)
 
+        from .authentication import assert_account_available
+        assert_account_available(user)
+
         if user.account_type == 'Barangay':
             # Guard: LGU account must have a barangay assigned or login is blocked
             if not user.barangay or not user.barangay.strip():
@@ -819,6 +860,18 @@ class ProfileImageUploadView(generics.UpdateAPIView):
     parser_classes = (MultiPartParser, FormParser)
     serializer_class = ProfileImageUploadSerializer
     throttle_classes = [ProfileImageUploadThrottle]
+
+    def perform_update(self, serializer):
+        super().perform_update(serializer)
+        self.upload_timings = serializer.context.get('upload_timings', {})
+
+    def update(self, request, *args, **kwargs):
+        from time import perf_counter
+        started_at = perf_counter()
+        response = super().update(request, *args, **kwargs)
+        timings = {**getattr(self, 'upload_timings', {}), 'profile_request': (perf_counter() - started_at) * 1000}
+        response['Server-Timing'] = ', '.join(f'{name};dur={duration:.1f}' for name, duration in timings.items())
+        return response
 
     def get_object(self):
         # We automatically return the logged-in user!

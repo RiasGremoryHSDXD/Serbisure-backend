@@ -150,6 +150,8 @@ class AdminVerificationQueueSerializer(serializers.ModelSerializer):
     Matches the TypeScript VerificationRequest type.
     """
     id = serializers.CharField(source='document_id', read_only=True)
+    userId = serializers.UUIDField(source='user_profile_id', read_only=True)
+    submittedAt = serializers.DateTimeField(source='created_at', read_only=True)
     name = serializers.SerializerMethodField()
     role = serializers.SerializerMethodField()
     avatar = serializers.SerializerMethodField()
@@ -193,7 +195,7 @@ class AdminVerificationQueueSerializer(serializers.ModelSerializer):
     class Meta:
         model = tbl_documents
         fields = [
-            'id', 'name', 'role', 'avatar', 'documentType', 'rawDocumentType', 'documentNumber',
+            'id', 'userId', 'submittedAt', 'name', 'role', 'avatar', 'documentType', 'rawDocumentType', 'documentNumber',
             'submittedDate', 'issuedDate', 'validityDate', 'status', 'primaryStatus', 'recordStatus',
             'documentImage', 'documentImageBack', 'barangay', 'contactNumber', 'email', 'notes',
             'faceLivenessMatchScore', 'ocrExtractedData', 'ocrDiscrepancies', 'ocrMatchScore',

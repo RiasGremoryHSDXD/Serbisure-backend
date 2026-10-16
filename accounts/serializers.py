@@ -374,6 +374,8 @@ class CustomLoginSerializer(TokenObtainPairSerializer):
         if user.account_type in ['Admin', 'Barangay'] or user.is_superuser or user.is_staff:
             raise AuthenticationFailed("Wrong email or password. Please try again!")
 
+        from .authentication import assert_account_available
+        assert_account_available(user)
         self.user = user
 
         refresh = self.get_token(user)
@@ -396,18 +398,9 @@ class ProfileImageUploadSerializer(serializers.ModelSerializer):
         read_only_fields = ['profile_link']
 
     def update(self, instance, validated_data):
+        from .profile_images import save_profile_image
         image_file = validated_data.pop('profile_image')
-        
-        upload_result = cloudinary.uploader.upload(
-            image_file,
-            folder="serbisure_profiles/",
-            type="authenticated"
-        )
-
-        public_id = upload_result.get('public_id')
-        instance.profile_link = public_id
-        instance.save()
-        
+        self.context['upload_timings'] = save_profile_image(instance, image_file)
         return instance
 
     def to_representation(self, instance):
@@ -726,7 +719,12 @@ class PublicProfileSerializer(serializers.ModelSerializer):
 
     def to_representation(self, instance):
         data = super().to_representation(instance)
-        if getattr(instance, 'show_contact_number', False):
+        # Barangay and Superadmin profiles are official public desks. Their
+        # hotline is part of the desk contact information, so it remains
+        # available to authenticated users even when the resident privacy
+        # toggle is left at its default value.
+        is_official_desk = instance.account_type in ['Barangay', 'Admin']
+        if getattr(instance, 'show_contact_number', False) or is_official_desk:
             data['contact_number'] = instance.contact_number
             data['show_contact_number'] = True
         else:

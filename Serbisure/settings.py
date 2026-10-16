@@ -174,7 +174,7 @@ AUTH_USER_MODEL = 'accounts.tbl_user_profile'
 # Django REST Framework Settings 
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES' : (
-        'rest_framework_simplejwt.authentication.JWTAuthentication',
+        'accounts.authentication.AccountJWTAuthentication',
     ),
     'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
     'DEFAULT_THROTTLE_RATES': {
