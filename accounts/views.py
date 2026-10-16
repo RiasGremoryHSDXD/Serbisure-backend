@@ -854,6 +854,18 @@ class ProfileImageUploadView(generics.UpdateAPIView):
     serializer_class = ProfileImageUploadSerializer
     throttle_classes = [ProfileImageUploadThrottle]
 
+    def perform_update(self, serializer):
+        super().perform_update(serializer)
+        self.upload_timings = serializer.context.get('upload_timings', {})
+
+    def update(self, request, *args, **kwargs):
+        from time import perf_counter
+        started_at = perf_counter()
+        response = super().update(request, *args, **kwargs)
+        timings = {**getattr(self, 'upload_timings', {}), 'profile_request': (perf_counter() - started_at) * 1000}
+        response['Server-Timing'] = ', '.join(f'{name};dur={duration:.1f}' for name, duration in timings.items())
+        return response
+
     def get_object(self):
         # We automatically return the logged-in user!
         return self.request.user

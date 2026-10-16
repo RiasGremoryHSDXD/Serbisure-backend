@@ -398,18 +398,9 @@ class ProfileImageUploadSerializer(serializers.ModelSerializer):
         read_only_fields = ['profile_link']
 
     def update(self, instance, validated_data):
+        from .profile_images import save_profile_image
         image_file = validated_data.pop('profile_image')
-        
-        upload_result = cloudinary.uploader.upload(
-            image_file,
-            folder="serbisure_profiles/",
-            type="authenticated"
-        )
-
-        public_id = upload_result.get('public_id')
-        instance.profile_link = public_id
-        instance.save()
-        
+        self.context['upload_timings'] = save_profile_image(instance, image_file)
         return instance
 
     def to_representation(self, instance):
