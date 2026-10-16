@@ -374,6 +374,8 @@ class CustomLoginSerializer(TokenObtainPairSerializer):
         if user.account_type in ['Admin', 'Barangay'] or user.is_superuser or user.is_staff:
             raise AuthenticationFailed("Wrong email or password. Please try again!")
 
+        from .authentication import assert_account_available
+        assert_account_available(user)
         self.user = user
 
         refresh = self.get_token(user)

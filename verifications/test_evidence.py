@@ -38,6 +38,44 @@ class VerificationEvidenceTests(APITestCase):
         self.assertIn(str(self.back.pk), [row['id'] for row in rows])
         self.assertNotIn(str(self.front.pk), [row['id'] for row in rows])
 
+    def test_queue_exposes_stable_applicant_identity_and_exact_submission_time(self):
+        front = AdminVerificationQueueSerializer(self.front).data
+        back = AdminVerificationQueueSerializer(self.back).data
+        self.assertEqual(front['userId'], str(self.owner.pk))
+        self.assertEqual(back['userId'], front['userId'])
+        self.assertNotEqual(front['id'], back['id'])
+        self.assertIn('T', front['submittedAt'])
+
+    def test_each_document_retains_its_own_status_reviewer_and_audit_history(self):
+        from .models import tbl_audit_logs
+        self.client.force_authenticate(self.admin)
+        worker = User.objects.create_user(email='evidence-worker@test.com', username='evidence-worker', account_type='Kasambahay')
+        nbi = tbl_documents.objects.create(user_profile=worker, document_type='nbi_clearance', document_url='nbi', verification_status='Pending')
+        police = tbl_documents.objects.create(user_profile=worker, document_type='police_clearance', document_url='police', verification_status='Pending')
+        for first, second, applicant in ((self.front, self.back, self.owner), (nbi, police, worker)):
+            def review(document, action):
+                response = self.client.post(f'/api/v1/verifications/admin/review/{document.pk}/',
+                    {'action': action, 'rejection_reason': 'Unreadable image'}, format='json')
+                self.assertEqual(response.status_code, 200, response.data)
+            review(first, 'approve')
+            second.refresh_from_db()
+            self.assertEqual(second.verification_status, 'Pending')
+            self.assertIsNone(second.verifyBy_id)
+            review(second, 'reject')
+            first.refresh_from_db(); second.refresh_from_db()
+            self.assertEqual(first.verification_status, 'Verified')
+            self.assertEqual(second.verification_status, 'Rejected')
+            self.assertEqual(User.objects.get(pk=applicant.pk).verification_status, 'Rejected')
+            review(second, 'reset')
+            first.refresh_from_db(); second.refresh_from_db()
+            self.assertEqual(first.verification_status, 'Verified')
+            self.assertEqual(second.verification_status, 'Pending')
+            self.assertEqual(first.verifyBy_id, self.admin.pk)
+            self.assertEqual(list(tbl_audit_logs.objects.filter(document=first, action__in=['APPROVED', 'REJECTED', 'RESET']).values_list('action', flat=True)), ['APPROVED'])
+            self.assertCountEqual(tbl_audit_logs.objects.filter(document=second, action__in=['APPROVED', 'REJECTED', 'RESET']).values_list('action', flat=True), ['REJECTED', 'RESET'])
+            review(second, 'approve')
+            self.assertEqual(User.objects.get(pk=applicant.pk).verification_status, 'Verified')
+
 
     def test_anonymous_and_marketplace_users_cannot_approve(self):
         url = '/api/v1/verifications/admin/review/' + str(self.front.pk) + '/'

@@ -69,6 +69,9 @@ This document outlines the database schema, models, field types, and choices (en
 | `contact_number` | `CharField` | Unique |
 | `show_contact_number` | `BooleanField` | - |
 | `is_on_job` | `BooleanField` | - |
+| `chat_suspended_until` | `DateTimeField` | Null=True, Blank=True |
+| `is_account_suspended` | `BooleanField` | - |
+| `suspended_by` | `ForeignKey` | Null=True, Blank=True, FK -> `tbl_user_profile` |
 | `cancellation_strikes` | `IntegerField` | - |
 | `is_restricted` | `BooleanField` | - |
 | `user_about` | `TextField` | Blank=True |

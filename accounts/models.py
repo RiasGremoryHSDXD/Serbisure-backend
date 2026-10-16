@@ -383,6 +383,11 @@ class tbl_user_profile(AbstractUser):
         help_text="Kasambahay employment status: True if On the Job, False if Available"
     )
 
+    chat_suspended_until = models.DateTimeField(null=True, blank=True)
+    is_account_suspended = models.BooleanField(default=False)
+    suspended_by = models.ForeignKey('self', null=True, blank=True, on_delete=models.SET_NULL,
+                                    related_name='suspensions_issued')
+
     cancellation_strikes = models.IntegerField(
         default=0,
         help_text="Accumulated booking cancellation penalty strikes"

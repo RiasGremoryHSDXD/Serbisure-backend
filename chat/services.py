@@ -63,7 +63,7 @@ def assert_message_access(user, message):
 def support_contacts(user):
     if user.account_type not in RESIDENT_ROLES:
         raise PermissionDenied('Support contacts are available to homeowners and kasambahays.')
-    accounts = get_user_model().objects.filter(is_active=True).filter(
+    accounts = get_user_model().objects.filter(is_active=True, is_account_suspended=False).filter(
         Q(account_type__in=['Admin', 'Barangay']) | Q(is_superuser=True)
     ).order_by('date_joined', 'pk')
     admins, desks = [], []

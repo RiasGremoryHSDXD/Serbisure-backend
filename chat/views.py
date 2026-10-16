@@ -129,11 +129,10 @@ class SendMessageView(generics.CreateAPIView):
         try:
             from notifications.services import send_in_app_notification
             sender_name = f"{request.user.first_name} {request.user.last_name}".strip() or request.user.username
-            preview = (chat_msg.message_payload[:60] + '...') if len(chat_msg.message_payload) > 60 else chat_msg.message_payload
             send_in_app_notification(
                 receiver=chat_msg.receiver_id,
                 sender=request.user,
-                message=f"New message from {sender_name}: \"{preview}\""
+                message=f"New message from {sender_name}."
             )
         except Exception:
             pass
@@ -142,6 +141,8 @@ class SendMessageView(generics.CreateAPIView):
             "message": "Message sent successfully.",
             "data": serializer.data
         }
+        from .moderation import LANGUAGE_NOTICE
+        response_data['language_warning'] = LANGUAGE_NOTICE if getattr(serializer, 'language_masked', False) else None
         response_status = status.HTTP_201_CREATED
 
         # Store in cache for 1 hour (idempotency window).
@@ -205,6 +206,8 @@ class SendImageMessageView(generics.CreateAPIView):
             )
 
         assert_chat_access(request.user, receiver_user)
+        from .moderation import assert_messaging_allowed
+        assert_messaging_allowed(request.user, receiver_user)
         cached_response = cache.get(f'chat_send_image_{request.user.pk}_{idempotency_key}')
         if cached_response:
             return Response(cached_response['data'], status=cached_response['status'])
@@ -264,25 +267,35 @@ class SendImageMessageView(generics.CreateAPIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # Step 8: Save tbl_chat_message in DB
-        chat_msg = tbl_chat_message.objects.create(
-            sender_id=request.user,
-            receiver_id=receiver_user,
-            booking_id=booking,
-            message_type='image',
-            image_public_id=public_id,
-            message_payload=caption if caption else None,
-        )
+        # Recheck under the same account lock used for moderation decisions: a
+        # restriction applied during an upload must not let the image through.
+        try:
+            from .moderation import assert_messaging_allowed
+            with transaction.atomic():
+                people = {u.pk: u for u in User.objects.select_for_update().filter(
+                    pk__in=[request.user.pk, receiver_user.pk]).order_by('pk')}
+                sender = people[request.user.pk]
+                receiver_user = people[receiver_user.pk]
+                assert_chat_access(sender, receiver_user)
+                assert_messaging_allowed(sender, receiver_user)
+                chat_msg = tbl_chat_message.objects.create(
+                    sender_id=sender, receiver_id=receiver_user, booking_id=booking,
+                    message_type='image', image_public_id=public_id, message_payload=caption or None)
+        except Exception:
+            try:
+                cloudinary.uploader.destroy(public_id, type='authenticated')
+            except Exception:
+                pass
+            raise
 
         # Step 9: In-app notification
         try:
             from notifications.services import send_in_app_notification
             sender_name = f"{request.user.first_name} {request.user.last_name}".strip() or request.user.username
-            notification_preview = f"📷 {caption}" if caption else "📷 Photo"
             send_in_app_notification(
                 receiver=chat_msg.receiver_id,
                 sender=request.user,
-                message=f"New message from {sender_name}: \"{notification_preview}\""
+                message=f"New photo from {sender_name}."
             )
         except Exception:
             pass
@@ -293,6 +306,8 @@ class SendImageMessageView(generics.CreateAPIView):
             "message": "Image sent successfully.",
             "data": out_serializer.data
         }
+        from .moderation import LANGUAGE_NOTICE
+        response_data['language_warning'] = LANGUAGE_NOTICE if getattr(serializer, 'language_masked', False) else None
         response_status = status.HTTP_201_CREATED
 
         # Step 11: Store in cache for 1 hour
@@ -662,6 +677,7 @@ class DeleteChatMessageView(generics.GenericAPIView):
     """
     permission_classes = [IsAuthenticated]
 
+    @transaction.atomic
     def delete(self, request, message_id, *args, **kwargs):
         clean_id = str(message_id).strip().rstrip('/')
 
@@ -673,7 +689,7 @@ class DeleteChatMessageView(generics.GenericAPIView):
             }, status=status.HTTP_200_OK)
 
         try:
-            message = tbl_chat_message.objects.get(chat_message_id=clean_id, is_deleted=False)
+            message = tbl_chat_message.objects.select_for_update().get(chat_message_id=clean_id, is_deleted=False)
         except tbl_chat_message.DoesNotExist:
             # Idempotent response: If already deleted or not found, return 200 OK so client does not error
             return Response({
@@ -724,6 +740,9 @@ class ChatTypingView(generics.GenericAPIView):
         if not partner:
             raise ValidationError({'detail': 'This typing target is not permitted.'})
         assert_chat_access(request.user, partner)
+        if is_typing:
+            from .moderation import assert_messaging_allowed
+            assert_messaging_allowed(request.user, partner)
         if partner_id:
             cache_key = f'chat_typing_{request.user.id}_{partner_id}'
             if is_typing:

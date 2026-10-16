@@ -1,6 +1,6 @@
 from django.urls import path
 from .worker_views import WorkerProfileView, WorkerCvView, WorkerCvExportView
-from rest_framework_simplejwt.views import TokenRefreshView
+from .token_views import AccountTokenRefreshView as TokenRefreshView
 from .views import (
     UserRegistrationView,
     CustomLoginView,

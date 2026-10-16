@@ -6,7 +6,7 @@ import time
 from channels.db import database_sync_to_async
 from channels.generic.websocket import AsyncWebsocketConsumer
 from django.conf import settings
-from rest_framework_simplejwt.authentication import JWTAuthentication
+from accounts.authentication import AccountJWTAuthentication as JWTAuthentication
 
 from .events import user_group
 from .presence import allowed_presence_ids, is_online, presence_group, update_presence, PRESENCE_TTL
@@ -43,7 +43,7 @@ def authenticate(token):
 @database_sync_to_async
 def active_account(user_id):
     from django.contrib.auth import get_user_model
-    return get_user_model().objects.filter(pk=user_id, is_active=True).exists()
+    return get_user_model().objects.filter(pk=user_id, is_active=True, is_account_suspended=False).exists()
 
 
 class UserEventsConsumer(AsyncWebsocketConsumer):
@@ -154,6 +154,9 @@ class UserEventsConsumer(AsyncWebsocketConsumer):
         return True
 
     async def user_event(self, event):
+        if self.user_id and event['event'].get('type') == 'moderation.changed' and not await active_account(self.user_id):
+            await self.close(code=4403)
+            return
         if self.user_id and await self.authorized():
             if event['event'].get('type') == 'presence.changed':
                 partner_id = event['event'].get('partner_id')

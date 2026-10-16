@@ -508,8 +508,10 @@ class BookingProposalCreateView(APIView):
         action = 'applied for your job' if booking.poster_id.account_type == 'Homeowner' else 'sent a hiring offer for your service'
         send_in_app_notification(receiver=booking.poster_id, sender=request.user,
                                  message=f"{name} {action} at ₱{proposal.proposed_rate}/{booking.rate_period}.")
+        from chat.moderation import LANGUAGE_NOTICE
         return Response({'message': 'Proposal submitted successfully.',
-                         'proposal': BookingProposalSerializer(proposal).data}, status=201)
+                         'proposal': BookingProposalSerializer(proposal).data,
+                         'language_warning': LANGUAGE_NOTICE if proposal.message != message else None}, status=201)
 
 
 class MyProposalBookingsView(APIView):

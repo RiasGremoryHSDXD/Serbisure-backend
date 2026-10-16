@@ -256,3 +256,20 @@ class RealtimeTests(TransactionTestCase):
             self.assertEqual(next(event for event in events if event['type'] == 'booking.changed')['booking_id'], str(booking.pk))
             await socket.disconnect()
         async_to_sync(scenario)()
+
+
+    def test_full_suspension_closes_existing_socket_and_rejects_reconnect(self):
+        from chat.moderation import set_suspension
+        async def scenario():
+            socket = await self.connect(self.partner_token)
+            await database_sync_to_async(set_suspension)(self.user, self.partner.pk, 'suspend_account')
+            close = await socket.receive_output()
+            self.assertEqual(close['type'], 'websocket.close')
+            self.assertEqual(close['code'], 4403)
+            await socket.disconnect()
+            retry = WebsocketCommunicator(application, '/ws/events/')
+            self.assertTrue((await retry.connect())[0])
+            await retry.send_json_to({'type': 'authenticate', 'token': self.partner_token})
+            self.assertEqual((await retry.receive_output())['type'], 'websocket.close')
+            await retry.disconnect()
+        async_to_sync(scenario)()
