@@ -4,6 +4,20 @@ This document outlines the database schema, models, field types, and choices (en
 
 ## Accounts App
 
+### `tbl_worker_status_history`
+- **Database Table:** `tbl_worker_status_history`
+
+| Field Name | Data Type | Constraints / Choices / FK |
+| --- | --- | --- |
+| `id` | `UUIDField` | Primary Key, Unique |
+| `worker` | `ForeignKey` | Null=True, FK -> `tbl_user_profile` |
+| `worker_id_snapshot` | `UUIDField` | - |
+| `status` | `BooleanField` | - |
+| `barangay` | `CharField` | Blank=True |
+| `changed_at` | `DateTimeField` | Blank=True |
+| `is_verified` | `BooleanField` | - |
+| `clearance_valid_until` | `DateField` | Null=True, Blank=True |
+
 ### `tbl_worker_profile`
 - **Database Table:** `tbl_worker_profile`
 

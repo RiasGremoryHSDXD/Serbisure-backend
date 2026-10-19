@@ -3,6 +3,7 @@ import re
 from collections import defaultdict
 from rest_framework.exceptions import PermissionDenied
 from .models import tbl_user_profile
+from .workforce import credential_snapshot, SERVICES
 
 
 def barangay_name(value):
@@ -18,8 +19,7 @@ def scope_for(request):
 
 
 def resident_snapshot(scope='All Barangays', restrict_directory=False):
-    from booking.models import tbl_booking_assignment, tbl_booking
-    users = list(tbl_user_profile.objects.filter(account_type__in=['Kasambahay', 'Homeowner'], is_active=True).prefetch_related('documents'))
+    users = list(tbl_user_profile.objects.filter(account_type__in=['Kasambahay', 'Homeowner'], is_active=True).prefetch_related('documents').select_related('worker_profile'))
     active = {}
     for value in tbl_user_profile.objects.filter(account_type='Barangay', is_active=True).values_list('barangay', flat=True):
         name = barangay_name(value)
@@ -40,16 +40,13 @@ def resident_snapshot(scope='All Barangays', restrict_directory=False):
         scoped = [user for user in users if barangay_name(user.barangay).casefold() not in active]
     else:
         scoped = groups.get(key, [])
-    active_bookings = tbl_booking.objects.filter(booking_status__in=['Accepted', 'InProgress'])
-    hired_ids = set(active_bookings.filter(poster_id__account_type='Kasambahay').values_list('poster_id', flat=True))
-    hired_ids.update(tbl_booking_assignment.objects.filter(booking_id__in=active_bookings, accepter_id__account_type='Kasambahay').values_list('accepter_id', flat=True))
+    statuses = {user.pk: credential_snapshot(user)[0] for user in users}
     def stats(residents):
-        workers = [user for user in residents if user.account_type == 'Kasambahay']
-        employed = sum(user.is_on_job or user.pk in hired_ids for user in workers)
+        workers = [user for user in residents if user.account_type == 'Kasambahay' and statuses[user.pk] == 'verified']
+        employed = sum(user.is_on_job for user in workers)
         counts = {'pending': 0, 'verified': 0, 'rejected': 0, 'noDocuments': 0}
         for user in residents:
-            # Count citizens once, using the same bilateral document rules as mobile.
-            counts[{'Pending': 'pending', 'Verified': 'verified', 'Rejected': 'rejected'}.get(user.verification_status, 'noDocuments')] += 1
+            counts[{'unverified': 'noDocuments'}.get(statuses[user.pk], statuses[user.pk])] += 1
         return {'totalRegistered': len(residents), 'totalWorkers': len(workers), 'employed': employed,
                 'available': len(workers) - employed,
                 'employmentRatio': round(employed / len(workers) * 100) if workers else 0, **counts}
@@ -58,7 +55,23 @@ def resident_snapshot(scope='All Barangays', restrict_directory=False):
             for name_key, name in sorted(names.items(), key=lambda entry: entry[1].casefold())
             if not restrict_directory or name_key == key]
     pending_documents = sum(doc.verification_status == 'Pending' for user in scoped for doc in user.documents.all())
+    verified_workers = [user for user in scoped if user.account_type == 'Kasambahay' and statuses[user.pk] == 'verified']
+    skills = []
+    for category in SERVICES:
+        count = sum(category in getattr(getattr(user, 'worker_profile', None), 'service_categories', []) for user in verified_workers)
+        skills.append({'category': category, 'count': count, 'percentage': round(count / len(verified_workers) * 100, 1) if verified_workers else 0})
     return {'metrics': {'totalWorkers': totals['totalWorkers'], 'totalEmployed': totals['employed'],
                         'totalAvailable': totals['available'], 'employmentRatio': totals['employmentRatio'],
                         'totalHomeowners': sum(user.account_type == 'Homeowner' for user in scoped),
-                        'pendingVerifications': pending_documents}, 'barangays': rows}
+                        'pendingVerifications': pending_documents}, 'barangays': rows,
+            'skills': {'totalWorkers': len(verified_workers), 'categories': skills}}
+
+
+def matches_scope(barangay, scope):
+    key = barangay_name(scope).casefold()
+    if key in ('all', 'all barangays'):
+        return True
+    if key in ('unassigned', 'no lgu coverage', 'no_lgu'):
+        active = {barangay_name(value).casefold() for value in tbl_user_profile.objects.filter(account_type='Barangay', is_active=True).values_list('barangay', flat=True)}
+        return barangay_name(barangay).casefold() not in active
+    return barangay_name(barangay).casefold() == key

@@ -473,172 +473,41 @@ class AdminDashboardActivityView(APIView):
 
 
 class AdminMonthlyTrendView(APIView):
-    """
-    Returns monthly employment trend data for the last 12 months.
-    Computes employed/available counts per calendar month from real booking data.
-    """
-    permission_classes = [AllowAny]
+    """Verified workforce as of each Philippine month end, from status events."""
+    permission_classes = [IsAuthenticated, IsPortalAdmin]
 
     def get(self, request, *args, **kwargs):
-        from booking.models import tbl_booking, tbl_booking_assignment
-        from django.db.models import Q, Count
-        from django.db.models.functions import TruncMonth
-        from django.utils import timezone
-        import calendar
-
-        barangay_param = request.query_params.get('barangay')
-
-        # Get total registered kasambahays (optional barangay scope)
-        workers_qs = tbl_user_profile.objects.filter(account_type='Kasambahay')
-        if barangay_param and barangay_param.upper() not in ['ALL', 'ALL BARANGAYS']:
-            workers_qs = workers_qs.filter(
-                Q(barangay__iexact=barangay_param) | Q(city__icontains=barangay_param) | Q(street__icontains=barangay_param)
-            )
-        total_workers = workers_qs.count()
-
-        # Currently active bookings and worker assignments
-        active_booking_ids = tbl_booking.objects.filter(
-            booking_status__in=['Accepted', 'InProgress']
-        ).values_list('booking_id', flat=True)
-        assigned_worker_ids = tbl_booking_assignment.objects.filter(
-            booking_id__in=active_booking_ids
-        ).values_list('accepter_id', flat=True).distinct()
-
-        # Currently employed/on-the-job in this barangay scope
-        current_employed_count = workers_qs.filter(
-            Q(is_on_job=True) | Q(id__in=assigned_worker_ids)
-        ).distinct().count()
-        current_available_count = max(0, total_workers - current_employed_count)
-
-        # Monthly booking aggregation for the past 12 calendar months
-        now = timezone.now()
-        months = []
-        for i in range(11, -1, -1):
-            # Compute month offset
-            month_offset = now.month - i
-            year_offset = now.year
-            while month_offset <= 0:
-                month_offset += 12
-                year_offset -= 1
-
-            month_start = now.replace(year=year_offset, month=month_offset, day=1, hour=0, minute=0, second=0, microsecond=0)
-            last_day = calendar.monthrange(year_offset, month_offset)[1]
-            month_end = month_start.replace(day=last_day, hour=23, minute=59, second=59)
-
-            # Check if this iteration represents the current calendar month
-            if month_offset == now.month and year_offset == now.year:
-                employed_count = current_employed_count
-                available_count = current_available_count
-            else:
-                # Count bookings accepted or in-progress during this past month
-                month_bookings_qs = tbl_booking.objects.filter(
-                    createdAt__gte=month_start,
-                    createdAt__lte=month_end,
-                    booking_status__in=['Accepted', 'InProgress', 'Completed']
-                )
-                month_employed_ids = tbl_booking_assignment.objects.filter(
-                    booking_id__in=month_bookings_qs.values_list('booking_id', flat=True),
-                    accepter_id__in=workers_qs.values_list('id', flat=True)
-                ).values_list('accepter_id', flat=True).distinct()
-
-                employed_count = month_employed_ids.count()
-                available_count = max(0, total_workers - employed_count)
-
-            months.append({
-                'month': month_start.strftime('%b'),
-                'year': year_offset,
-                'employed': employed_count,
-                'on_the_job': employed_count,
-                'available': available_count,
-                'total': total_workers,
-            })
-
-        return Response({
-            'trend': months,
-            'barangay': barangay_param or 'All Barangays',
-            'total_workers': total_workers,
-            'current_on_the_job': current_employed_count,
-            'current_available': current_available_count,
-        }, status=status.HTTP_200_OK)
+        from .admin_statistics import resident_snapshot, scope_for, matches_scope
+        from .workforce import monthly_workforce
+        scope = scope_for(request)
+        metrics = resident_snapshot(scope)['metrics']
+        response = Response(monthly_workforce(scope, metrics, matches_scope))
+        response['Cache-Control'] = 'private, no-store'
+        return response
 
 
 class AdminVerificationStatusStatsView(APIView):
-    """
-    Returns the current count of accounts per verification status.
-    Covers Kasambahay and Homeowner accounts only (excludes Admin/Barangay).
-    Optionally filtered by barangay.
-
-    GET /api/v1/accounts/admin/verification-status-stats/?barangay=Pagatpat
-
-    Response:
-    {
-        "barangay": "Pagatpat",
-        "stats": {
-            "verified": 12,
-            "pending": 5,
-            "unverified": 8,
-            "rejected": 2
-        },
-        "total": 27
-    }
-    """
-    permission_classes = [AllowAny]
+    """One account per status; each role requires its complete current credentials."""
+    permission_classes = [IsAuthenticated, IsPortalAdmin]
 
     def get(self, request, *args, **kwargs):
-        import re
-        barangay_param = request.query_params.get('barangay', '').strip()
-
-        # Base queryset: only Kasambahay + Homeowner accounts
-        qs = tbl_user_profile.objects.filter(
-            account_type__in=['Kasambahay', 'Homeowner'],
-            is_active=True,
-        ).prefetch_related('documents')
-
-        # Optional barangay scope (idiot-proof filter against different naming conventions: "Brgy. Pagatpat", "Barangay Pagatpat", "Pagatpat")
-        if barangay_param and barangay_param.upper() not in ['ALL', 'ALL BARANGAYS']:
-            clean_bgy = re.sub(r'^(brgy\.?|barangay)\s+', '', barangay_param, flags=re.IGNORECASE).strip()
-            qs = qs.filter(
-                Q(barangay__icontains=clean_bgy) |
-                Q(barangay__icontains=barangay_param) |
-                Q(city__icontains=clean_bgy) |
-                Q(street__icontains=clean_bgy)
-            )
-
-        # Force prefetch evaluation safely into a list before accessing .verification_status property
-        users = list(qs)
-
-        verified = 0
-        pending = 0
-        unverified = 0
-        rejected = 0
-
+        from .admin_statistics import scope_for, matches_scope
+        from .workforce import credential_snapshot
+        from rest_framework.exceptions import ValidationError
+        scope = scope_for(request)
+        role = request.query_params.get('role', 'All Roles')
+        if role not in ('All Roles', 'Kasambahay', 'Homeowner'):
+            raise ValidationError({'role': 'Choose All Roles, Kasambahay or Homeowner.'})
+        users = tbl_user_profile.objects.filter(account_type__in=['Kasambahay', 'Homeowner'], is_active=True).prefetch_related('documents')
+        if role != 'All Roles':
+            users = users.filter(account_type=role)
+        counts = dict(verified=0, pending=0, unverified=0, rejected=0)
         for user in users:
-            docs = list(user.documents.all())
-            if not docs:
-                unverified += 1
-            else:
-                doc_statuses = [d.verification_status for d in docs]
-                if 'Pending' in doc_statuses:
-                    pending += 1
-                elif 'Rejected' in doc_statuses:
-                    rejected += 1
-                elif all(s == 'Verified' for s in doc_statuses):
-                    verified += 1
-                else:
-                    unverified += 1
-
-        total = verified + pending + unverified + rejected
-
-        return Response({
-            'barangay': barangay_param or 'All Barangays',
-            'stats': {
-                'verified': verified,
-                'pending': pending,
-                'unverified': unverified,
-                'rejected': rejected,
-            },
-            'total': total,
-        }, status=status.HTTP_200_OK)
+            if matches_scope(user.barangay, scope):
+                counts[credential_snapshot(user)[0]] += 1
+        response = Response({'barangay': scope, 'role': role, 'stats': counts, 'total': sum(counts.values())})
+        response['Cache-Control'] = 'private, no-store'
+        return response
 
 
 class AdminLoginView(APIView):
@@ -984,11 +853,18 @@ class JobStatusView(generics.RetrieveUpdateAPIView):
     Get or update Kasambahay availability / job status.
     GET/PATCH /api/v1/accounts/job-status/
     """
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, IsKasambahay]
     serializer_class = JobStatusSerializer
 
     def get_object(self):
         return self.request.user
+
+    def perform_update(self, serializer):
+        from django.db import transaction
+        with transaction.atomic():
+            # Serialize concurrent mobile updates; the save and history commit together.
+            serializer.instance = tbl_user_profile.objects.select_for_update().get(pk=self.request.user.pk)
+            serializer.save()
 
 class PublicProfileView(generics.RetrieveAPIView):
     """
