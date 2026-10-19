@@ -12,4 +12,6 @@ class AccountJWTAuthentication(JWTAuthentication):
     def get_user(self, validated_token):
         user = super().get_user(validated_token)
         assert_account_available(user)
+        from .penalties import refresh_monthly_penalties
+        refresh_monthly_penalties(user)
         return user

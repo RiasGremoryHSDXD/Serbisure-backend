@@ -3,7 +3,7 @@ from decimal import Decimal
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
 from django.contrib.auth import get_user_model
-from django.db import close_old_connections
+from django.db import close_old_connections, connection
 from django.test import TransactionTestCase
 from django.urls import reverse
 from django.utils import timezone
@@ -206,7 +206,24 @@ class EngagementGuardTests(APITestCase):
         self.assertIn('attachment', response['Content-Disposition'])
 
 
-class ConcurrentAcceptanceTests(TransactionTestCase):
+class BookingTransactionTestCase(TransactionTestCase):
+    def _fixture_teardown(self):
+        # As in realtime tests, permit fixture truncation only in the disposable local test DB.
+        if connection.vendor != 'postgresql':
+            return super()._fixture_teardown()
+        if (not connection.settings_dict['NAME'].startswith('test_')
+                or connection.settings_dict['HOST'] not in ('localhost', '127.0.0.1', '::1')):
+            raise RuntimeError('Audit fixture cleanup requires an isolated local test database.')
+        with connection.cursor() as cursor:
+            cursor.execute('ALTER TABLE tbl_account_access_audit DISABLE TRIGGER account_access_audit_immutable')
+        try:
+            return super()._fixture_teardown()
+        finally:
+            with connection.cursor() as cursor:
+                cursor.execute('ALTER TABLE tbl_account_access_audit ENABLE TRIGGER account_access_audit_immutable')
+
+
+class ConcurrentAcceptanceTests(BookingTransactionTestCase):
     def setUp(self):
         self.owner, self.worker = participants()
 
@@ -234,36 +251,47 @@ class ConcurrentAcceptanceTests(TransactionTestCase):
 
 
 
-class CompensationMigrationTests(TransactionTestCase):
+class PenaltyPointsMigrationTests(BookingTransactionTestCase):
     def test_restriction_migration_preserves_existing_columns_and_values(self):
-        from django.apps import apps
         from django.db import connection
+        from django.db.migrations.executor import MigrationExecutor
         from importlib import import_module
         owner, _ = participants()
-        owner.cancellation_strikes = 2
+        owner.penalty_points = 2
         owner.is_restricted = True
-        owner.save(update_fields=['cancellation_strikes', 'is_restricted'])
-        migration = import_module('accounts.migrations.0018_engagement_restrictions')
-        with connection.schema_editor() as editor:
-            migration.ensure_restriction_columns(apps, editor)
+        owner.save(update_fields=['penalty_points', 'is_restricted'])
+        executor = MigrationExecutor(connection)
+        previous = [('accounts', '0020_tbl_user_profile_chat_suspended_until_and_more')]
+        latest = executor.loader.graph.leaf_nodes()
+        try:
+            executor.migrate(previous)
+            old_apps = executor.loader.project_state(previous).apps
+            old_user = old_apps.get_model('accounts', 'tbl_user_profile').objects.get(pk=owner.pk)
+            self.assertEqual(old_user.cancellation_strikes, 2)
+            migration = import_module('accounts.migrations.0018_engagement_restrictions')
+            with connection.schema_editor() as editor:
+                migration.ensure_restriction_columns(old_apps, editor)
+        finally:
+            MigrationExecutor(connection).migrate(latest)
         owner.refresh_from_db()
-        self.assertEqual(owner.cancellation_strikes, 2)
+        self.assertEqual(owner.penalty_points, 2)
         self.assertTrue(owner.is_restricted)
 
+
+class CompensationMigrationTests(BookingTransactionTestCase):
     def test_legacy_amounts_are_preserved_and_require_explicit_monthly_review(self):
         from django.db import connection
         from django.db.migrations.executor import MigrationExecutor
         owner, _ = participants()
+        row_id = post(owner, booking_type='long_term', rate_period='month', rate_amount='8000').pk
         previous = [('booking', '0011_tbl_saved_post')]
-        latest = [('booking', '0014_tbl_booking_daily_end_time_and_more'), ('chat', '0006_tbl_chat_message_booking_proposal_and_more')]
         executor = MigrationExecutor(connection)
-        executor.migrate(previous)
+        latest = executor.loader.graph.leaf_nodes()
         try:
+            executor.migrate(previous)
             old_apps = executor.loader.project_state(previous).apps
             OldBooking = old_apps.get_model('booking', 'tbl_booking')
-            row = OldBooking.objects.create(poster_id_id=owner.pk, booking_type='long_term',
-                service_category=['Cleaning'], start_time=timezone.now()+timedelta(days=2), daily_rate='8000')
-            row_id = row.pk
+            self.assertEqual(OldBooking.objects.get(pk=row_id).daily_rate, Decimal('8000.00'))
             executor = MigrationExecutor(connection)
             executor.migrate(latest)
             row = tbl_booking.objects.get(pk=row_id)

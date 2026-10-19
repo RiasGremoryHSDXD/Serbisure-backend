@@ -72,7 +72,8 @@ This document outlines the database schema, models, field types, and choices (en
 | `chat_suspended_until` | `DateTimeField` | Null=True, Blank=True |
 | `is_account_suspended` | `BooleanField` | - |
 | `suspended_by` | `ForeignKey` | Null=True, Blank=True, FK -> `tbl_user_profile` |
-| `cancellation_strikes` | `IntegerField` | - |
+| `penalty_points` | `IntegerField` | - |
+| `penalty_month` | `DateField` | - |
 | `is_restricted` | `BooleanField` | - |
 | `user_about` | `TextField` | Blank=True |
 | `user_tags` | `JSONField` | Blank=True |
@@ -168,6 +169,10 @@ This document outlines the database schema, models, field types, and choices (en
 | `rate_needs_review` | `BooleanField` | - |
 | `started_at` | `DateTimeField` | Null=True, Blank=True |
 | `completed_at` | `DateTimeField` | Null=True, Blank=True |
+| `cancellation_reason` | `CharField` | Null=True, Blank=True |
+| `cancelled_by` | `ForeignKey` | Null=True, Blank=True, FK -> `tbl_user_profile` |
+| `cancelled_at` | `DateTimeField` | Null=True, Blank=True |
+| `cancellation_penalty_points` | `PositiveSmallIntegerField` | - |
 | `createdAt` | `DateTimeField` | Blank=True |
 
 ### `tbl_booking_assignment`

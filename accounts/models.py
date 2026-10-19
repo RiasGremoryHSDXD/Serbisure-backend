@@ -4,6 +4,7 @@ from django.db.models import CheckConstraint, Q
 from django.core.validators import RegexValidator
 from django.core.exceptions import ValidationError
 from django.db.models.expressions import RawSQL
+from .penalties import current_penalty_month
 import uuid 
 
 
@@ -388,10 +389,12 @@ class tbl_user_profile(AbstractUser):
     suspended_by = models.ForeignKey('self', null=True, blank=True, on_delete=models.SET_NULL,
                                     related_name='suspensions_issued')
 
-    cancellation_strikes = models.IntegerField(
+    penalty_points = models.IntegerField(
         default=0,
-        help_text="Accumulated booking cancellation penalty strikes"
+        help_text="Accumulated booking cancellation penalty points"
     )
+
+    penalty_month = models.DateField(default=current_penalty_month)
 
     is_restricted = models.BooleanField(
         default=False,

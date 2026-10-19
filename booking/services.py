@@ -9,6 +9,7 @@ from django.utils import timezone
 from rest_framework.exceptions import PermissionDenied, ValidationError
 from .models import tbl_booking, tbl_booking_assignment, tbl_booking_proposal
 from .wage_policy import validate_rate
+from accounts.penalties import assert_booking_unrestricted
 
 PH_TIME = ZoneInfo('Asia/Manila')
 SHORT_TERM_CAP = 3
@@ -38,7 +39,8 @@ def ensure_eligible_pair(poster, accepter):
     if {poster.account_type, accepter.account_type} != {'Homeowner', 'Kasambahay'}:
         raise PermissionDenied('An engagement requires one Homeowner and one Kasambahay.')
     for person in (poster, accepter):
-        if not person.is_active or person.is_restricted or person.verification_status != 'Verified':
+        assert_booking_unrestricted(person)
+        if not person.is_active or person.verification_status != 'Verified':
             raise PermissionDenied('Both participants must be active, unrestricted and verified.')
         required = ('national_id_front', 'national_id_back') if person.account_type == 'Homeowner' else ('nbi_clearance', 'police_clearance')
         from verifications.models import tbl_documents

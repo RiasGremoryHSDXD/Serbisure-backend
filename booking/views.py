@@ -15,6 +15,9 @@ from .serializers import (
     BookingProposalSerializer,
     SavedPostItemSerializer
 )
+from .serializers import BookingCancellationSerializer
+from .cancellation import cancel_booking, cancellation_preview, SAFETY_REASON
+from accounts.penalties import assert_booking_unrestricted, penalty_status
 from .models import tbl_booking, tbl_booking_assignment, tbl_booking_proposal, tbl_saved_post
 from reviews.models import tbl_review
 from django.core.cache import cache
@@ -42,8 +45,11 @@ class BookingView(generics.CreateAPIView):
     queryset = tbl_booking.objects.all()
     permission_classes = [IsAuthenticated]
 
+    @transaction.atomic
     def create(self, request, *args, **kwargs):
-        if request.user.account_type not in ("Homeowner", "Kasambahay") or request.user.is_restricted or request.user.verification_status != "Verified":
+        request.user = User.objects.select_for_update().get(pk=request.user.pk)
+        assert_booking_unrestricted(request.user)
+        if request.user.account_type not in ("Homeowner", "Kasambahay") or request.user.verification_status != "Verified":
             return Response({
                 "code": "account_not_verified",
                 "detail": "Account verification is required before posting. Please verify your account to keep our community safe and trusted.",
@@ -384,48 +390,31 @@ class BookingCompleteView(APIView):
 
 
 class BookingCancelView(APIView):
-    """
-    Cancels a booking (Tier 1-1).
-    """
     permission_classes = [IsAuthenticated]
+    throttle_classes = [BookingThrottle]
 
-    @transaction.atomic
+    def get(self, request, booking_id):
+        booking = get_object_or_404(tbl_booking, pk=booking_id)
+        return Response(cancellation_preview(booking, request.user))
+
     def patch(self, request, booking_id):
-        try:
-            booking = tbl_booking.objects.select_for_update().get(booking_id=booking_id)
-        except tbl_booking.DoesNotExist:
-            return Response({'error': 'Booking not found.'}, status=status.HTTP_404_NOT_FOUND)
-
-        assignment = booking.assignments.select_related('accepter_id').first()
-        is_accepter = assignment and assignment.accepter_id == request.user
-        is_poster = booking.poster_id == request.user
-
-        is_offer_recipient = booking.booking_status == 'Pending' and booking.recipient_id_id == request.user.pk
-        if not (is_poster or is_accepter or is_offer_recipient):
-            return Response({'error': 'You are not authorized to cancel this booking.'}, status=status.HTTP_403_FORBIDDEN)
-
-        if booking.booking_status in ['Completed', 'Cancelled']:
-            return Response({'error': f'Booking is already {booking.booking_status}.'}, status=status.HTTP_400_BAD_REQUEST)
-
-        booking.booking_status = 'Cancelled'
-        booking.save(update_fields=['booking_status'])
-        booking.proposals.filter(status='Pending').update(status='Rejected')
-
-        # Notify counterparty if assignment existed
-        if assignment and assignment.accepter_id:
-            counterparty = assignment.accepter_id if is_poster else booking.poster_id
-            actor_name = f"{request.user.first_name} {request.user.last_name}".strip() or request.user.username
-            cats = ", ".join(booking.service_category) if isinstance(booking.service_category, list) else str(booking.service_category)
-            send_in_app_notification(
-                receiver=counterparty,
-                sender=request.user,
-                message=f"Booking for {cats} was cancelled by {actor_name}."
-            )
-
+        serializer = BookingCancellationSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        booking, actor, changed = cancel_booking(booking_id, request.user,
+            serializer.validated_data['reason'], serializer.validated_data.get('expected_points'))
         return Response({
             'message': 'Booking has been cancelled.',
-            'booking': BookingDetailSerializer(booking, context={'request': request}).data
+            'booking': BookingDetailSerializer(booking, context={'request': request}).data,
+            'penalty': {**penalty_status(actor), 'points_added': booking.cancellation_penalty_points if changed else 0},
+            'safety_advisory': actor.account_type == 'Kasambahay' and booking.cancellation_reason == SAFETY_REASON,
         }, status=status.HTTP_200_OK)
+
+
+class BookingPenaltyStatusView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        return Response(penalty_status(request.user))
 
 
 class MyBookingsView(generics.ListAPIView):

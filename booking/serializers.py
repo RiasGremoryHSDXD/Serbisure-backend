@@ -9,6 +9,13 @@ from django.db.models import Avg
 from core.utils import get_signed_cloudinary_url
 
 
+class BookingCancellationSerializer(serializers.Serializer):
+    reason = serializers.CharField(max_length=255, allow_blank=False,
+        error_messages={'required': 'Choose a cancellation reason.', 'blank': 'Choose a cancellation reason.'})
+    expected_points = serializers.IntegerField(min_value=0, max_value=2, required=False)
+    action = serializers.ChoiceField(choices=['cancel', 'request', 'reject'], required=False)
+
+
 def get_signed_avatar(user):
     if not user:
         return None
@@ -234,6 +241,10 @@ class BookingDetailSerializer(serializers.ModelSerializer):
             'started_at',
             'completed_at',
             'contract_summary',
+            'cancellation_reason',
+            'cancelled_by',
+            'cancelled_at',
+            'cancellation_penalty_points',
         ]
 
     def get_contract_summary(self, obj):
