@@ -57,5 +57,6 @@ class AccountsConfig(AppConfig):
     name = 'accounts'
 
     def ready(self):
+        from . import signals
         # This tells Django to run the function right after 'python manage.py migrate' finishes!
         post_migrate.connect(generate_models_markdown, sender=self)

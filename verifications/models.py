@@ -1,4 +1,4 @@
-from django.db import models
+from django.db import models, transaction
 from django.conf import settings
 from django.db.models import CheckConstraint, Q
 import uuid 
@@ -6,6 +6,12 @@ import uuid
 # Create your models here.
 
 class tbl_documents(models.Model):
+
+    def save(self, *args, **kwargs):
+        with transaction.atomic(using=kwargs.get('using') or 'default'):
+            super().save(*args, **kwargs)
+            from accounts.workforce import record_worker_status
+            record_worker_status(self.user_profile_id, using=self._state.db)
 
 
     DOCUMENT_CHOICES = (

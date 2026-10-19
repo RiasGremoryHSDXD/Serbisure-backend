@@ -116,6 +116,14 @@ MESSAGE_TYPE_CHOICES = [
 ALLOWED_EMOJIS = {'❤️', '👍', '😂', '😢', '😭', '😮', '😱', '😜', '😡'}
 
 
+class ChatMessageQuerySet(models.QuerySet):
+    def visible_to(self, user):
+        return self.filter(is_deleted=False).filter(
+            Q(sender_id=user, hidden_by_sender=False) |
+            Q(receiver_id=user, hidden_by_receiver=False)
+        )
+
+
 class tbl_chat_message(models.Model):
     chat_message_id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     
@@ -171,6 +179,11 @@ class tbl_chat_message(models.Model):
     is_deleted = models.BooleanField(
         default=False
     )
+
+    hidden_by_sender = models.BooleanField(default=False)
+    hidden_by_receiver = models.BooleanField(default=False)
+
+    objects = ChatMessageQuerySet.as_manager()
 
     createdAt = models.DateTimeField(auto_now_add=True)
 

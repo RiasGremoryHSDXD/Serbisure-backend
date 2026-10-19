@@ -13,7 +13,7 @@ from django.db.models import Q
 from django.shortcuts import get_object_or_404
 from core.utils import check_valid_uuid, get_signed_cloudinary_url
 from .models import tbl_chat_message, tbl_chat_reaction, ALLOWED_EMOJIS
-from .services import assert_chat_access, assert_message_access, can_chat, support_contacts
+from .services import assert_chat_access, assert_message_access, can_chat, support_contacts, remove_message_for_user
 from .serializers import (
     SendMessageSerializer,
     SendImageMessageSerializer,
@@ -365,6 +365,9 @@ class ReactMessageView(generics.GenericAPIView):
 
         # Step 4: Validate request body (Edge Case #16, #17, #18, #25)
         assert_message_access(request.user, message)
+        hidden = message.hidden_by_sender if message.sender_id_id == request.user.pk else message.hidden_by_receiver
+        if hidden:
+            return Response({'detail': 'Message not found.'}, status=status.HTTP_404_NOT_FOUND)
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         emoji = serializer.validated_data['emoji']
@@ -465,7 +468,7 @@ class ChatMessageView(generics.ListAPIView):
         assert_chat_access(current_user, partner)
 
         # Authorization guard: Fetch only messages between these two users
-        return tbl_chat_message.objects.filter(
+        return tbl_chat_message.objects.visible_to(current_user).filter(
             Q(sender_id=current_user, receiver_id=partner_id) |
             Q(sender_id=partner_id, receiver_id=current_user),
             is_deleted=False
@@ -476,7 +479,7 @@ class ChatMessageView(generics.ListAPIView):
         # Check access before marking any messages read or publishing receipts.
         queryset = self.filter_queryset(self.get_queryset())
         if partner_id and check_valid_uuid(str(partner_id)):
-            read_count = tbl_chat_message.objects.filter(
+            read_count = tbl_chat_message.objects.visible_to(request.user).filter(
                 sender_id=partner_id,
                 receiver_id=request.user,
                 is_read=False,
@@ -527,12 +530,13 @@ class ChatInboxView(generics.GenericAPIView):
         current_user = request.user
 
         # Step 1: Find all unique partner IDs this user has talked to
-        sent_to = tbl_chat_message.objects.filter(
+        visible_messages = tbl_chat_message.objects.visible_to(current_user)
+        sent_to = visible_messages.filter(
             sender_id=current_user,
             is_deleted=False
         ).values_list('receiver_id', flat=True).distinct()
 
-        received_from = tbl_chat_message.objects.filter(
+        received_from = visible_messages.filter(
             receiver_id=current_user,
             is_deleted=False
         ).values_list('sender_id', flat=True).distinct()
@@ -547,7 +551,7 @@ class ChatInboxView(generics.GenericAPIView):
                 continue
 
             # Step 2: Get most recent message in the conversation
-            last_msg = tbl_chat_message.objects.filter(
+            last_msg = visible_messages.filter(
                 Q(sender_id=current_user, receiver_id=partner) |
                 Q(sender_id=partner, receiver_id=current_user),
                 is_deleted=False
@@ -557,14 +561,14 @@ class ChatInboxView(generics.GenericAPIView):
                 continue
 
             # Step 3: Count unread messages from this partner
-            unread_count = tbl_chat_message.objects.filter(
+            unread_count = visible_messages.filter(
                 sender_id=partner,
                 receiver_id=current_user,
                 is_read=False,
                 is_deleted=False
             ).count()
 
-            sent_count = tbl_chat_message.objects.filter(
+            sent_count = visible_messages.filter(
                 sender_id=current_user,
                 receiver_id=partner,
                 is_deleted=False
@@ -574,13 +578,13 @@ class ChatInboxView(generics.GenericAPIView):
             partner_profile_image = get_signed_cloudinary_url(getattr(partner, 'profile_link', None), as_avatar=True)
 
             # Format preview text for text vs image messages
+            raw_payload = last_msg.message_payload or ""
+            # Both text replies and photo captions use the mobile-compatible quote prefix.
+            match = re.match(r'^> \[[^\]]+\]:\s*.*?\n\n([\s\S]*)$', raw_payload)
+            clean_payload = match.group(1).strip() if match else raw_payload
             if last_msg.message_type == 'image':
-                last_message_text = f"📷 {last_msg.message_payload}" if last_msg.message_payload else "📷 Photo"
+                last_message_text = f"📷 {clean_payload}" if clean_payload else "📷 Photo"
             else:
-                raw_payload = last_msg.message_payload or ""
-                # Strip markdown reply quotes like '> [Name]: quoted\n\nActual message'
-                match = re.match(r'^> \[[^\]]+\]:\s*.*?\n\n([\s\S]*)$', raw_payload)
-                clean_payload = match.group(1).strip() if match else raw_payload
                 if last_msg.sender_id == current_user:
                     last_message_text = f"You: {clean_payload}" if clean_payload else "You sent a message"
                 else:
@@ -632,7 +636,7 @@ class MarkMessageReadView(generics.UpdateAPIView):
             raise ValidationError({"detail": "Invalid or missing message UUID."})
 
         try:
-            message = tbl_chat_message.objects.get(chat_message_id=message_id)
+            message = tbl_chat_message.objects.visible_to(self.request.user).get(chat_message_id=message_id)
         except tbl_chat_message.DoesNotExist:
             raise ValidationError({"detail": "Message not found."})
 
@@ -671,11 +675,11 @@ class MarkMessageReadView(generics.UpdateAPIView):
 
 class DeleteChatMessageView(generics.GenericAPIView):
     """
-    Deletes / unsends a message in the conversation.
-    Participants (sender or receiver) can delete.
-    Sets is_deleted=True.
+    Removes a message only from the authenticated participant's devices.
+    Message content and the other participant's visibility are preserved.
     """
     permission_classes = [IsAuthenticated]
+    throttle_classes = [ChatMessageThrottle]
 
     @transaction.atomic
     def delete(self, request, message_id, *args, **kwargs):
@@ -704,12 +708,10 @@ class DeleteChatMessageView(generics.GenericAPIView):
                 status=status.HTTP_403_FORBIDDEN
             )
 
-        assert_message_access(request.user, message)
-        message.is_deleted = True
-        message.save(update_fields=['is_deleted'])
+        remove_message_for_user(request.user, message)
 
         return Response({
-            "message": "Message deleted successfully.",
+            "message": "Message removed for you.",
             "data": {
                 "message_id": str(clean_id)
             }

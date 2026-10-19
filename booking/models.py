@@ -167,6 +167,11 @@ class tbl_booking(models.Model):
     rate_needs_review = models.BooleanField(default=False)
     started_at = models.DateTimeField(null=True, blank=True)
     completed_at = models.DateTimeField(null=True, blank=True)
+    cancellation_reason = models.CharField(max_length=255, blank=True, null=True, default='')
+    cancelled_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name='cancelled_bookings', db_column='cancelled_by')
+    cancelled_at = models.DateTimeField(null=True, blank=True)
+    cancellation_penalty_points = models.PositiveSmallIntegerField(default=0)
 
     createdAt = models.DateTimeField(
         auto_now_add=True

@@ -138,14 +138,14 @@ class ManualSafetyTests(APITestCase):
             self.assertEqual(self.action(self.admin, target, 'restore_account').status_code, 200)
 
     def test_only_manual_action_and_booking_penalties_untouched(self):
-        self.worker.cancellation_strikes = 2; self.worker.is_restricted = True; self.worker.save()
+        self.worker.penalty_points = 2; self.worker.is_restricted = True; self.worker.save()
         for _ in range(4):
             self.assertEqual(self.send(self.worker, self.owner, 'gago').status_code, 201)
         self.worker.refresh_from_db()
         self.assertIsNone(self.worker.chat_suspended_until)
         self.action(self.desk, self.worker)
         self.worker.refresh_from_db()
-        self.assertEqual(self.worker.cancellation_strikes, 2)
+        self.assertEqual(self.worker.penalty_points, 2)
         self.assertTrue(self.worker.is_restricted)
 
     def test_pause_blocks_resident_sends_but_both_official_channels_work(self):

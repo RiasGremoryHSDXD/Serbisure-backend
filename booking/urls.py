@@ -11,6 +11,7 @@ from .views import (
     BookingStartView,
     BookingCompleteView,
     BookingCancelView,
+    BookingPenaltyStatusView,
     MyBookingsView,
     MyAssignedBookingsView,
     BookingProposalCreateView,
@@ -24,6 +25,7 @@ from .views import (
 )
 
 urlpatterns = [
+    path('penalties/', BookingPenaltyStatusView.as_view(), name='booking-penalties'),
     path('chat-offers/', ChatBookingOfferView.as_view(), name='booking-chat-offer'),
     path('my-proposals/', MyProposalBookingsView.as_view(), name='booking-my-proposals'),
     path('contract-template/', BookingContractTemplateView.as_view(), name='booking-contract-template'),

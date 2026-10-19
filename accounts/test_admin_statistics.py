@@ -13,7 +13,7 @@ class AdminStatisticsTests(APITestCase):
         self.addCleanup(cache.clear)
         self.sequence = 0
         self.admin = self.user('Admin', '')
-        self.worker = self.user('Kasambahay', 'Brgy. Pagatpat')
+        self.worker = self.user('Kasambahay', 'Brgy. Pagatpat', verification_status='Verified')
         self.owner = self.user('Homeowner', 'Pagatpat')
         self.stats = reverse('admin-dashboard-stats')
         self.active = reverse('admin-active-barangays')
@@ -36,7 +36,7 @@ class AdminStatisticsTests(APITestCase):
         self.assertEqual(data['metrics']['totalWorkers'], 1)
         self.assertEqual(data['metrics']['totalHomeowners'], 1)
         self.assertEqual(data['barangays'], [{'name': 'Pagatpat', 'status': 'INACTIVE', 'totalRegistered': 2,
-            'totalWorkers': 1, 'employed': 0, 'available': 1, 'employmentRatio': 0, 'pending': 0, 'verified': 0, 'rejected': 0, 'noDocuments': 2}])
+            'totalWorkers': 1, 'employed': 0, 'available': 1, 'employmentRatio': 0, 'pending': 0, 'verified': 1, 'rejected': 0, 'noDocuments': 1}])
         self.assertEqual(self.client.get(self.active).data['active_lgus'], [])
         self.assertEqual(self.client.get(self.active).data['user_barangays'], ['Pagatpat'])
 
@@ -60,19 +60,19 @@ class AdminStatisticsTests(APITestCase):
         self.assertEqual(row['verified'], 0)
         self.assertEqual(row['pending'] + row['verified'] + row['rejected'] + row['noDocuments'], row['totalRegistered'])
 
-    def test_workforce_counts_both_booking_initiators_and_deduplicates_jobs(self):
+    def test_workforce_ignores_bookings_and_uses_only_the_verified_worker_toggle(self):
         self.booking(self.worker, self.owner)
         self.booking(self.owner, self.worker)
         data = self.client.get(self.stats).data
-        self.assertEqual(data['metrics']['totalEmployed'], 1)
-        self.assertEqual(data['metrics']['totalAvailable'], 0)
+        self.assertEqual(data['metrics']['totalEmployed'], 0)
+        self.assertEqual(data['metrics']['totalAvailable'], 1)
         tbl_booking.objects.update(booking_status='Cancelled')
         self.assertEqual(self.client.get(self.stats).data['metrics']['totalAvailable'], 1)
         self.worker.is_on_job = True; self.worker.save(update_fields=['is_on_job'])
         self.assertEqual(self.client.get(self.stats).data['metrics']['totalEmployed'], 1)
 
     def test_empty_lgu_coverage_counts_all_residents_and_exact_barangay_matching(self):
-        self.user('Kasambahay', 'Pagatpat Heights', street='Pagatpat')
+        self.user('Kasambahay', 'Pagatpat Heights', street='Pagatpat', verification_status='Verified')
         self.assertEqual(self.client.get(self.stats, {'barangay': 'UNASSIGNED'}).data['metrics']['totalWorkers'], 2)
         self.assertEqual(self.client.get(self.stats, {'barangay': 'Pagatpat'}).data['metrics']['totalWorkers'], 1)
         self.user('Barangay', 'Pagatpat')

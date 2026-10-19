@@ -4,6 +4,20 @@ This document outlines the database schema, models, field types, and choices (en
 
 ## Accounts App
 
+### `tbl_worker_status_history`
+- **Database Table:** `tbl_worker_status_history`
+
+| Field Name | Data Type | Constraints / Choices / FK |
+| --- | --- | --- |
+| `id` | `UUIDField` | Primary Key, Unique |
+| `worker` | `ForeignKey` | Null=True, FK -> `tbl_user_profile` |
+| `worker_id_snapshot` | `UUIDField` | - |
+| `status` | `BooleanField` | - |
+| `barangay` | `CharField` | Blank=True |
+| `changed_at` | `DateTimeField` | Blank=True |
+| `is_verified` | `BooleanField` | - |
+| `clearance_valid_until` | `DateField` | Null=True, Blank=True |
+
 ### `tbl_worker_profile`
 - **Database Table:** `tbl_worker_profile`
 
@@ -72,7 +86,8 @@ This document outlines the database schema, models, field types, and choices (en
 | `chat_suspended_until` | `DateTimeField` | Null=True, Blank=True |
 | `is_account_suspended` | `BooleanField` | - |
 | `suspended_by` | `ForeignKey` | Null=True, Blank=True, FK -> `tbl_user_profile` |
-| `cancellation_strikes` | `IntegerField` | - |
+| `penalty_points` | `IntegerField` | - |
+| `penalty_month` | `DateField` | - |
 | `is_restricted` | `BooleanField` | - |
 | `user_about` | `TextField` | Blank=True |
 | `user_tags` | `JSONField` | Blank=True |
@@ -168,6 +183,10 @@ This document outlines the database schema, models, field types, and choices (en
 | `rate_needs_review` | `BooleanField` | - |
 | `started_at` | `DateTimeField` | Null=True, Blank=True |
 | `completed_at` | `DateTimeField` | Null=True, Blank=True |
+| `cancellation_reason` | `CharField` | Null=True, Blank=True |
+| `cancelled_by` | `ForeignKey` | Null=True, Blank=True, FK -> `tbl_user_profile` |
+| `cancelled_at` | `DateTimeField` | Null=True, Blank=True |
+| `cancellation_penalty_points` | `PositiveSmallIntegerField` | - |
 | `createdAt` | `DateTimeField` | Blank=True |
 
 ### `tbl_booking_assignment`
@@ -276,6 +295,8 @@ This document outlines the database schema, models, field types, and choices (en
 | `message_payload` | `EncryptedTextField` | Null=True, Blank=True |
 | `is_read` | `BooleanField` | - |
 | `is_deleted` | `BooleanField` | - |
+| `hidden_by_sender` | `BooleanField` | - |
+| `hidden_by_receiver` | `BooleanField` | - |
 | `createdAt` | `DateTimeField` | Blank=True |
 
 ### `tbl_chat_reaction`

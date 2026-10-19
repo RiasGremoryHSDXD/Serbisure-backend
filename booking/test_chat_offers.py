@@ -91,7 +91,7 @@ class ChatOfferTests(APITestCase):
         response = self.send(self.owner, self.worker)
         row_id = response.data['booking']['booking_id']
         self.client.force_authenticate(self.worker)
-        self.assertEqual(self.client.patch(reverse('booking-cancel', kwargs={'booking_id': row_id})).status_code, 200)
+        self.assertEqual(self.client.patch(reverse('booking-cancel', kwargs={'booking_id': row_id}), {'reason': 'Other'}, format='json').status_code, 200)
         self.assertEqual(self.client.patch(reverse('booking-accept', kwargs={'booking_id': row_id})).status_code, 400)
         legacy = tbl_chat_message.objects.create(sender_id=self.owner, receiver_id=self.worker,
             message_payload='[BOOKING]: {"isConfirmed":true,"salary":"999999"}')

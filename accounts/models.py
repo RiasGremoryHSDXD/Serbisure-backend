@@ -1,10 +1,27 @@
 from django.contrib.auth.models import AbstractUser, BaseUserManager
-from django.db import models
+from django.db import models, transaction
 from django.db.models import CheckConstraint, Q
 from django.core.validators import RegexValidator
 from django.core.exceptions import ValidationError
 from django.db.models.expressions import RawSQL
+from .penalties import current_penalty_month
 import uuid 
+
+
+class tbl_worker_status_history(models.Model):
+    """Immutable status and eligibility at an event; retained after account deletion."""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    worker = models.ForeignKey('tbl_user_profile', on_delete=models.SET_NULL, null=True, related_name='status_history')
+    worker_id_snapshot = models.UUIDField(editable=False)
+    status = models.BooleanField(help_text='True: Occupied; False: Available')
+    barangay = models.CharField(max_length=100, blank=True)
+    changed_at = models.DateTimeField(auto_now_add=True)
+    is_verified = models.BooleanField(default=False, help_text='Active worker with both required clearances approved at this event')
+    clearance_valid_until = models.DateField(null=True, blank=True)
+
+    class Meta:
+        db_table = 'tbl_worker_status_history'
+        indexes = [models.Index(fields=['worker_id_snapshot', '-changed_at'], name='worker_status_latest_idx')]
 
 
 class tbl_worker_profile(models.Model):
@@ -388,10 +405,12 @@ class tbl_user_profile(AbstractUser):
     suspended_by = models.ForeignKey('self', null=True, blank=True, on_delete=models.SET_NULL,
                                     related_name='suspensions_issued')
 
-    cancellation_strikes = models.IntegerField(
+    penalty_points = models.IntegerField(
         default=0,
-        help_text="Accumulated booking cancellation penalty strikes"
+        help_text="Accumulated booking cancellation penalty points"
     )
+
+    penalty_month = models.DateField(default=current_penalty_month)
 
     is_restricted = models.BooleanField(
         default=False,
@@ -468,7 +487,10 @@ class tbl_user_profile(AbstractUser):
         if self.account_type in ['Barangay', 'Admin']:
             self.is_staff = True
 
-        super().save(*args, **kwargs)
+        with transaction.atomic(using=kwargs.get('using') or 'default'):
+            super().save(*args, **kwargs)
+            from .workforce import record_worker_status
+            record_worker_status(self.pk, using=self._state.db)
 
     def __str__(self):
         return self.username

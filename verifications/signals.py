@@ -48,7 +48,7 @@ def document_post_delete_audit(sender, instance, **kwargs):
         ).exists()
 
         if not already_logged:
-            record_audit_log(
+            log = record_audit_log(
                 document=None,
                 action='DELETED',
                 actor=None,
@@ -62,5 +62,11 @@ def document_post_delete_audit(sender, instance, **kwargs):
                     'document_number': getattr(instance, 'document_number', None),
                 }
             )
+            # The deletion collector already cleared older audit FKs. New cascade
+            # logs must keep their snapshots without reattaching to the removed user.
+            from accounts.models import tbl_user_profile
+            origin = kwargs.get('origin')
+            if log and (isinstance(origin, tbl_user_profile) or getattr(origin, 'model', None) is tbl_user_profile):
+                tbl_audit_logs.objects.filter(pk=log.pk).update(target_user=None)
     except Exception as e:
         logger.error(f"[Signal] Error in document_post_delete_audit: {e}", exc_info=True)

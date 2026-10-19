@@ -9,6 +9,7 @@ from django.utils import timezone
 from rest_framework.exceptions import PermissionDenied, ValidationError
 from .models import tbl_booking, tbl_booking_assignment, tbl_booking_proposal
 from .wage_policy import validate_rate
+from accounts.penalties import assert_booking_unrestricted
 
 PH_TIME = ZoneInfo('Asia/Manila')
 SHORT_TERM_CAP = 3
@@ -38,7 +39,8 @@ def ensure_eligible_pair(poster, accepter):
     if {poster.account_type, accepter.account_type} != {'Homeowner', 'Kasambahay'}:
         raise PermissionDenied('An engagement requires one Homeowner and one Kasambahay.')
     for person in (poster, accepter):
-        if not person.is_active or person.is_restricted or person.verification_status != 'Verified':
+        assert_booking_unrestricted(person)
+        if not person.is_active or person.verification_status != 'Verified':
             raise PermissionDenied('Both participants must be active, unrestricted and verified.')
         required = ('national_id_front', 'national_id_back') if person.account_type == 'Homeowner' else ('nbi_clearance', 'police_clearance')
         from verifications.models import tbl_documents
@@ -54,6 +56,9 @@ def ensure_open(booking):
         raise ValidationError({'error': 'This post is no longer available.'})
     if booking.start_time <= timezone.now():
         raise ValidationError({'error': 'This post has expired. The poster must publish a new schedule.'})
+    if (booking.booking_type == 'long_term' and booking.end_time
+            and (booking.end_time.astimezone(PH_TIME).date() - booking.start_time.astimezone(PH_TIME).date()).days < 30):
+        raise ValidationError({'end_time': 'SerbiSure requires at least 30 days for long-term posts. Choose a later end date.'})
     if booking.rate_needs_review:
         raise ValidationError({'error': 'The poster must confirm the monthly amount on this legacy post before it can be accepted.'})
 
