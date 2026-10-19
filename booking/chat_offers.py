@@ -52,7 +52,10 @@ class ChatBookingOfferView(APIView):
                              'language_warning': LANGUAGE_NOTICE if instruction != original_instruction else None})
         serializer = BookingSerializer(data=request.data, context={'request': request})
         serializer.is_valid(raise_exception=True)
-        for field in ('end_time', 'work_days', 'daily_start_time', 'daily_end_time', 'region', 'street'):
+        required_terms = ['work_days', 'daily_start_time', 'daily_end_time', 'region', 'street']
+        if serializer.validated_data['booking_type'] == 'short_term':
+            required_terms.append('end_time')
+        for field in required_terms:
             if not serializer.validated_data.get(field):
                 raise ValidationError({field: 'Specify this agreed term before sending an offer.'})
         booking = serializer.save(poster_id=sender, recipient_id=recipient, special_instruction=instruction,

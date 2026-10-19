@@ -56,6 +56,9 @@ def ensure_open(booking):
         raise ValidationError({'error': 'This post is no longer available.'})
     if booking.start_time <= timezone.now():
         raise ValidationError({'error': 'This post has expired. The poster must publish a new schedule.'})
+    if (booking.booking_type == 'long_term' and booking.end_time
+            and (booking.end_time.astimezone(PH_TIME).date() - booking.start_time.astimezone(PH_TIME).date()).days < 30):
+        raise ValidationError({'end_time': 'SerbiSure requires at least 30 days for long-term posts. Choose a later end date.'})
     if booking.rate_needs_review:
         raise ValidationError({'error': 'The poster must confirm the monthly amount on this legacy post before it can be accepted.'})
 

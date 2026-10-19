@@ -116,14 +116,11 @@ class BookingSerializer(serializers.ModelSerializer):
         if data.get('rate_period') is None:
             raise serializers.ValidationError({'rate_period': 'Specify day for short-term or month for long-term.'})
 
-        # Sanity check: Long-term domestic service duration cannot be under 24 hours
+        # Platform minimum uses Philippine calendar dates, not shift hours.
         if booking_type == 'long_term' and start_time and end_time:
-            if (end_time - start_time).total_seconds() < 86400:
+            if (end_time.astimezone(PH_TIME).date() - start_time.astimezone(PH_TIME).date()).days < 30:
                 raise serializers.ValidationError({
-                    "booking_type": (
-                        "Long-term bookings are for ongoing domestic employment lasting multiple days or months. "
-                        "For tasks or shifts under 24 hours, please select Short-term."
-                    )
+                    'end_time': 'SerbiSure requires at least 30 days for long-term posts. Choose a later end date.'
                 })
 
         return data
@@ -265,6 +262,7 @@ class BookingDetailSerializer(serializers.ModelSerializer):
             'rate_needs_review': obj.rate_needs_review,
             'rate_period': obj.rate_period,
             'start_date': obj.start_time.isoformat(),
+            'end_date': obj.end_time.isoformat() if obj.end_time else None,
             'location': obj.full_address,
             'contract_pdf_url': request.build_absolute_uri('/api/v1/booking/contract-template/'),
             'source_url': DOLE_CONTRACT_PDF_URL,

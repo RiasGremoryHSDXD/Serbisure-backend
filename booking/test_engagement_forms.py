@@ -52,7 +52,7 @@ class EngagementFormTests(APITestCase):
                 self.assertEqual(str(row.daily_end_time), '17:00:00')
 
     def test_all_three_short_term_shifts_preserve_selected_date_and_times(self):
-        for start_hour, end_hour in ((8, 12), (12, 17), (17, 21)):
+        for start_hour, end_hour in ((8, 12), (12, 17), (17, 21), (9, 14), (7, 13)):
             for chat in (False, True):
                 terms = self.terms(start_hour=start_hour, end_hour=end_hour)
                 response = self.send(self.worker, self.owner, chat, terms)
@@ -73,3 +73,32 @@ class EngagementFormTests(APITestCase):
                 response = self.send(self.owner, self.worker, chat, {**terms, **updates})
                 self.assertEqual(response.status_code, 400, response.data)
         self.assertFalse(tbl_booking.objects.exists())
+
+    def test_fixed_duration_calendar_boundary_for_both_roles_and_entry_points(self):
+        for sender, receiver in ((self.owner, self.worker), (self.worker, self.owner)):
+            for chat in (False, True):
+                for duration in (1, 29, 30, 90):
+                    terms = self.terms(long_term=True, end_hour=17)
+                    start = datetime.fromisoformat(terms['start_time'])
+                    terms['end_time'] = (start + timedelta(days=duration, hours=9)).isoformat()
+                    response = self.send(sender, receiver, chat, terms)
+                    self.assertEqual(response.status_code, 400 if duration < 30 else 201, response.data)
+                    if duration < 30:
+                        self.assertIn('30 days', str(response.data))
+
+    def test_ongoing_terms_persist_accept_and_return_contract_without_an_end_date(self):
+        for sender, receiver in ((self.owner, self.worker), (self.worker, self.owner)):
+            for chat in (False, True):
+                terms = {**self.terms(long_term=True, end_hour=17), 'end_time': None}
+                response = self.send(sender, receiver, chat, terms)
+                self.assertEqual(response.status_code, 201, response.data)
+                saved = response.data['booking' if chat else 'data']
+                self.assertIsNone(saved['end_time'])
+                self.client.force_authenticate(receiver)
+                accepted = self.client.patch(reverse('booking-accept', kwargs={'booking_id': saved['booking_id']}))
+                self.assertEqual(accepted.status_code, 200, accepted.data)
+                row = tbl_booking.objects.get(pk=saved['booking_id'])
+                self.assertIsNone(row.end_time)
+                self.assertEqual(str(row.daily_end_time), '17:00:00')
+                detail = self.client.get(reverse('booking-detail', kwargs={'booking_id': row.pk}))
+                self.assertIsNone(detail.data['contract_summary']['end_date'])
