@@ -239,7 +239,7 @@ class SendImageMessageTests(TestCase):
         self.assertIn("image", response.data)
 
     def test_send_caption_too_long_rejected(self):
-        """Edge Case #13: Caption exceeding 200 characters is rejected."""
+        """Edge Case #13: Caption exceeding 500 characters is rejected."""
         image_file = SimpleUploadedFile("photo.jpg", make_jpeg_bytes(), content_type="image/jpeg")
         key = str(uuid.uuid4())
 
@@ -248,7 +248,7 @@ class SendImageMessageTests(TestCase):
             {
                 'receiver_id': str(self.bob.id),
                 'image': image_file,
-                'message_payload': 'A' * 201
+                'message_payload': 'A' * 501
             },
             format='multipart',
             HTTP_IDEMPOTENCY_KEY=key

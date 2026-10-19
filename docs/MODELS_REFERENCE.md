@@ -276,6 +276,8 @@ This document outlines the database schema, models, field types, and choices (en
 | `message_payload` | `EncryptedTextField` | Null=True, Blank=True |
 | `is_read` | `BooleanField` | - |
 | `is_deleted` | `BooleanField` | - |
+| `hidden_by_sender` | `BooleanField` | - |
+| `hidden_by_receiver` | `BooleanField` | - |
 | `createdAt` | `DateTimeField` | Blank=True |
 
 ### `tbl_chat_reaction`

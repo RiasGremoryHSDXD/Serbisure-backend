@@ -71,6 +71,22 @@ def assert_message_access(user, message):
     assert_chat_access(user, partner)
 
 
+def remove_message_for_user(user, message):
+    """Keep message content and media intact; change only this participant's view."""
+    from .models import tbl_chat_message
+    from realtime.events import publish
+
+    assert_message_access(user, message)
+    is_sender = message.sender_id_id == user.pk
+    field = 'hidden_by_sender' if is_sender else 'hidden_by_receiver'
+    changed = tbl_chat_message.objects.filter(pk=message.pk, **{field: False}).update(**{field: True})
+    if changed:
+        partner_id = message.receiver_id_id if is_sender else message.sender_id_id
+        # Notify this account's other devices only. The partner's view is unchanged.
+        publish([user.pk], {'type': 'chat.changed', 'partner_id': str(partner_id),
+                           'message_id': str(message.pk)})
+
+
 def support_contacts(user):
     if user.account_type not in RESIDENT_ROLES:
         raise PermissionDenied('Support contacts are available to homeowners and kasambahays.')

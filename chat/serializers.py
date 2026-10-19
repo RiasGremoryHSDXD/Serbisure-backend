@@ -89,13 +89,13 @@ class SendImageMessageSerializer(serializers.ModelSerializer):
         }
     )
     message_payload = serializers.CharField(
-        max_length=200,
+        max_length=500,
         required=False,
         allow_blank=True,
         allow_null=True,
         default='',
         error_messages={
-            "max_length": "Caption cannot exceed 200 characters."
+            "max_length": "Caption cannot exceed 500 characters."
         }
     )
 
