@@ -6,7 +6,7 @@
             "src": "Serbisure/wsgi.py",
             "use": "@vercel/python",
             "config": {
-                "includeFiles": "{booking,accounts}/assets/**"
+                "includeFiles": "{booking/assets/**,accounts/assets/**,chat/offensive_terms.json}"
             }
         }
     ],

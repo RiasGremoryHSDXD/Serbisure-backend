@@ -9,7 +9,24 @@ import time
 User = get_user_model()
 
 
-class SendMessageSerializer(serializers.ModelSerializer):
+class ChatLanguageSerializer(serializers.ModelSerializer):
+    language_warning_acknowledged = serializers.BooleanField(default=False, write_only=True)
+    is_sensitive = serializers.SerializerMethodField()
+
+    def get_is_sensitive(self, obj):
+        from .moderation_rules import contains_offensive_language
+        return contains_offensive_language(obj.message_payload)
+
+    def validate_language(self, attrs):
+        from .moderation import inspect_chat_outgoing
+        acknowledged = attrs.pop('language_warning_acknowledged', False)
+        request = self.context.get('request')
+        if request and attrs.get('receiver_id'):
+            inspect_chat_outgoing(request.user, attrs['receiver_id'],
+                                  attrs.get('message_payload', '') or '', acknowledged)
+
+
+class SendMessageSerializer(ChatLanguageSerializer):
     """
     Serializer for validating and creating new text chat messages.
     """
@@ -31,6 +48,8 @@ class SendMessageSerializer(serializers.ModelSerializer):
             'receiver_id',
             'booking_id',
             'message_payload',
+            'language_warning_acknowledged',
+            'is_sensitive',
             'is_read',
             'createdAt'
         ]
@@ -63,10 +82,7 @@ class SendMessageSerializer(serializers.ModelSerializer):
 
         if request and receiver:
             assert_chat_access(request.user, receiver)
-            from .moderation import inspect_outgoing
-            original = attrs.get('message_payload', '')
-            attrs['message_payload'] = inspect_outgoing(request.user, receiver, original)
-            self.language_masked = attrs['message_payload'] != original
+        self.validate_language(attrs)
 
         booking = attrs.get('booking_id')
         if booking and booking.recipient_id_id and (not request or
@@ -75,7 +91,7 @@ class SendMessageSerializer(serializers.ModelSerializer):
         return attrs
 
 
-class SendImageMessageSerializer(serializers.ModelSerializer):
+class SendImageMessageSerializer(ChatLanguageSerializer):
     """
     Serializer for validating image attachments and optional captions.
     """
@@ -107,6 +123,8 @@ class SendImageMessageSerializer(serializers.ModelSerializer):
             'receiver_id',
             'booking_id',
             'message_payload',
+            'language_warning_acknowledged',
+            'is_sensitive',
             'image',
             'is_read',
             'createdAt'
@@ -170,10 +188,7 @@ class SendImageMessageSerializer(serializers.ModelSerializer):
 
         if request and receiver:
             assert_chat_access(request.user, receiver)
-            from .moderation import inspect_outgoing
-            original = attrs.get('message_payload', '') or ''
-            attrs['message_payload'] = inspect_outgoing(request.user, receiver, original)
-            self.language_masked = attrs['message_payload'] != original
+        self.validate_language(attrs)
 
         booking = attrs.get('booking_id')
         if booking and booking.recipient_id_id and (not request or
@@ -211,7 +226,7 @@ class ReactMessageSerializer(serializers.Serializer):
         return val
 
 
-class ChatMessageSerializer(serializers.ModelSerializer):
+class ChatMessageSerializer(ChatLanguageSerializer):
     """
     Serializer for individual messages in a conversation thread.
     Includes sender indicator, image signed URL, reaction summary, and personal reaction.
@@ -233,6 +248,7 @@ class ChatMessageSerializer(serializers.ModelSerializer):
             'image_public_id',
             'image_url',
             'message_payload',
+            'is_sensitive',
             'is_read',
             'is_sender',
             'booking_offer',

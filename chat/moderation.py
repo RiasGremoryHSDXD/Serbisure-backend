@@ -43,6 +43,18 @@ def inspect_outgoing(user, partner, text, request_key='', channel='message'):
     return mask_text(text or '')
 
 
+def inspect_chat_outgoing(user, partner, text, acknowledged=False):
+    """Require explicit consent before persisting flagged chat text, without rewriting it."""
+    from rest_framework.exceptions import APIException
+    from .moderation_rules import contains_offensive_language, OFFENSIVE_LANGUAGE_ADVISORY
+    assert_messaging_allowed(user, partner)
+    if contains_offensive_language(text) and not acknowledged:
+        error = APIException({'code': 'offensive_language_warning', 'detail': OFFENSIVE_LANGUAGE_ADVISORY})
+        error.status_code = 409
+        raise error
+    return text
+
+
 def may_manage(actor, target):
     if not actor.is_active or actor.is_account_suspended or actor.pk == target.pk:
         return False
