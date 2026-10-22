@@ -10,12 +10,21 @@ from rest_framework.test import APITestCase
 from rest_framework_simplejwt.tokens import RefreshToken
 from .models import tbl_chat_message
 from .moderation import assert_messaging_allowed, ChatSafetyError
-from .moderation_rules import mask_text
+from .moderation_rules import mask_text, contains_offensive_language
+import json
+from pathlib import Path
 
 User = get_user_model()
 
 
 class MaskTests(SimpleTestCase):
+    def test_advisory_shared_language_corpus(self):
+        cases = json.loads(Path(__file__).with_name('language_cases.json').read_text(encoding='utf-8'))
+        for group, expected in [('flagged', True), ('clean', False)]:
+            for text in cases[group]:
+                with self.subTest(text=text):
+                    self.assertEqual(contains_offensive_language(text), expected)
+
     def test_required_examples_and_boundaries(self):
         for original, expected in [('kill', 'k*ll'), ('fuck you', 'f*ck you'), ('gago', 'g*go'), ('yawa', 'y*wa'),
                                    ('GAGO ka!', 'G*GO ka!'), ('patyon tika', 'p*tyon tika')]:
@@ -56,43 +65,63 @@ class ManualSafetyTests(APITestCase):
             body['until'] = (timezone.now() + timedelta(hours=24)).isoformat()
         return self.client.post(f'/api/v1/chat/safety/users/{target.pk}/', body, format='json')
 
-    def send(self, sender, recipient, text='Hello', key=None):
+    def send(self, sender, recipient, text='Hello', key=None, acknowledged=False):
         self.client.force_authenticate(sender)
         return self.client.post('/api/v1/chat/send/', {'receiver_id': str(recipient.pk),
-            'message_payload': text}, format='json', HTTP_IDEMPOTENCY_KEY=key or str(uuid.uuid4()))
+            'message_payload': text, 'language_warning_acknowledged': acknowledged}, format='json', HTTP_IDEMPOTENCY_KEY=key or str(uuid.uuid4()))
 
-    def test_mask_before_storage_notice_sender_only_and_no_penalty(self):
+    def test_warning_before_storage_override_keeps_original_and_no_penalty(self):
         result = self.send(self.owner, self.worker, 'fuck you gago yawa kill')
+        self.assertEqual(result.status_code, 409, result.data)
+        self.assertEqual(result.data['code'], 'offensive_language_warning')
+        self.assertEqual(tbl_chat_message.objects.count(), 0)
+        result = self.send(self.owner, self.worker, 'fuck you gago yawa kill', acknowledged=True)
         self.assertEqual(result.status_code, 201, result.data)
         message = tbl_chat_message.objects.get()
-        self.assertEqual(message.message_payload, 'f*ck you g*go y*wa k*ll')
-        self.assertIn('communicate respectfully', result.data['language_warning'])
+        self.assertEqual(message.message_payload, 'fuck you gago yawa kill')
+        self.assertTrue(result.data['data']['is_sensitive'])
+        self.assertIsNone(result.data['language_warning'])
         self.owner.refresh_from_db()
         self.assertIsNone(self.owner.chat_suspended_until)
         self.assertFalse(self.owner.is_account_suspended)
         self.client.force_authenticate(self.worker)
         data = self.client.get(f'/api/v1/chat/thread/{self.owner.pk}/').data
         self.assertNotIn('language_warning', str(data))
-        self.assertNotIn('fuck you', str(data))
+        self.assertIn('fuck you', str(data))
+        self.assertIn('is_sensitive', str(data))
+        preview = self.client.get('/api/v1/chat/inbox/').data
+        self.assertNotIn('fuck you', str(preview))
+        self.assertIn('Sensitive message', str(preview))
 
     def test_clean_send_no_warning_and_retry_no_duplicate(self):
         key = str(uuid.uuid4())
-        first = self.send(self.owner, self.worker, 'gago', key)
-        second = self.send(self.owner, self.worker, 'gago', key)
+        first = self.send(self.owner, self.worker, 'gago', key, acknowledged=True)
+        second = self.send(self.owner, self.worker, 'gago', key, acknowledged=True)
         self.assertEqual(first.data, second.data)
         self.assertEqual(tbl_chat_message.objects.count(), 1)
         result = self.send(self.owner, self.worker)
         self.assertIsNone(result.data['language_warning'])
 
     @patch('chat.views.cloudinary.uploader.upload', return_value={'public_id': 'test_image', 'width': 10, 'height': 10})
-    def test_image_caption_masked(self, upload):
+    def test_image_caption_override_keeps_original(self, upload):
+        self.client.force_authenticate(self.owner)
+        image = SimpleUploadedFile('test.png', b'\x89PNG\r\n\x1a\n' + b'0'*24, content_type='image/png')
+        result = self.client.post('/api/v1/chat/send-image/', {'receiver_id': str(self.worker.pk),
+            'image': image, 'message_payload': 'yawa', 'language_warning_acknowledged': 'true'}, format='multipart', HTTP_IDEMPOTENCY_KEY=str(uuid.uuid4()))
+        self.assertEqual(result.status_code, 201, result.data)
+        self.assertEqual(tbl_chat_message.objects.get().message_payload, 'yawa')
+        self.assertTrue(result.data['data']['is_sensitive'])
+        self.assertIsNone(result.data['language_warning'])
+
+    @patch('chat.views.cloudinary.uploader.upload')
+    def test_flagged_caption_without_consent_never_uploads_or_saves(self, upload):
         self.client.force_authenticate(self.owner)
         image = SimpleUploadedFile('test.png', b'\x89PNG\r\n\x1a\n' + b'0'*24, content_type='image/png')
         result = self.client.post('/api/v1/chat/send-image/', {'receiver_id': str(self.worker.pk),
             'image': image, 'message_payload': 'yawa'}, format='multipart', HTTP_IDEMPOTENCY_KEY=str(uuid.uuid4()))
-        self.assertEqual(result.status_code, 201, result.data)
-        self.assertEqual(tbl_chat_message.objects.get().message_payload, 'y*wa')
-        self.assertTrue(result.data['language_warning'])
+        self.assertEqual(result.status_code, 409, result.data)
+        upload.assert_not_called()
+        self.assertFalse(tbl_chat_message.objects.exists())
 
     def test_local_officer_can_pause_lift_and_record_actor(self):
         result = self.action(self.desk, self.worker)
@@ -140,7 +169,7 @@ class ManualSafetyTests(APITestCase):
     def test_only_manual_action_and_booking_penalties_untouched(self):
         self.worker.penalty_points = 2; self.worker.is_restricted = True; self.worker.save()
         for _ in range(4):
-            self.assertEqual(self.send(self.worker, self.owner, 'gago').status_code, 201)
+            self.assertEqual(self.send(self.worker, self.owner, 'gago', acknowledged=True).status_code, 201)
         self.worker.refresh_from_db()
         self.assertIsNone(self.worker.chat_suspended_until)
         self.action(self.desk, self.worker)

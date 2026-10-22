@@ -579,6 +579,9 @@ class ChatInboxView(generics.GenericAPIView):
 
             # Format preview text for text vs image messages
             raw_payload = last_msg.message_payload or ""
+            from .moderation_rules import contains_offensive_language
+            if last_msg.sender_id_id != request.user.pk and contains_offensive_language(raw_payload):
+                raw_payload = 'Sensitive message'
             # Both text replies and photo captions use the mobile-compatible quote prefix.
             match = re.match(r'^> \[[^\]]+\]:\s*.*?\n\n([\s\S]*)$', raw_payload)
             clean_payload = match.group(1).strip() if match else raw_payload
