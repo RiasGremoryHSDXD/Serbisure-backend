@@ -1,4 +1,5 @@
 from django.urls import path
+from .penalty_api import PenaltyUsersView, PenaltyReviewView, PenaltyHistoryView, PenaltyExportView
 from .worker_views import WorkerProfileView, WorkerCvView, WorkerCvExportView
 from .token_views import AccountTokenRefreshView as TokenRefreshView
 from .views import (
@@ -27,6 +28,10 @@ from .views import (
 )
 
 urlpatterns = [
+    path('admin/penalties/users/', PenaltyUsersView.as_view(), name='penalty-admin-users'),
+    path('admin/penalties/users/<uuid:user_id>/', PenaltyReviewView.as_view(), name='penalty-admin-review'),
+    path('admin/penalties/history/', PenaltyHistoryView.as_view(), name='penalty-admin-history'),
+    path('admin/penalties/export/', PenaltyExportView.as_view(), name='penalty-admin-export'),
     path('worker-profile/', WorkerProfileView.as_view(), name='worker-profile'),
     path('worker-cv/<uuid:user_id>/', WorkerCvView.as_view(), name='worker-cv'),
     path('worker-cv/<uuid:user_id>/export/', WorkerCvExportView.as_view(), name='worker-cv-export'),

@@ -4,6 +4,33 @@ This document outlines the database schema, models, field types, and choices (en
 
 ## Accounts App
 
+### `PenaltyAdjustment`
+- **Database Table:** `tbl_penalty_adjustment`
+
+| Field Name | Data Type | Constraints / Choices / FK |
+| --- | --- | --- |
+| `id` | `UUIDField` | Primary Key, Unique |
+| `request_id` | `UUIDField` | Unique |
+| `user_id_snapshot` | `UUIDField` | - |
+| `user_name` | `CharField` | - |
+| `user_role` | `CharField` | - |
+| `user_barangay` | `CharField` | Blank=True |
+| `barangay_key` | `CharField` | Blank=True |
+| `city_key` | `CharField` | Blank=True |
+| `province_key` | `CharField` | Blank=True |
+| `admin_id_snapshot` | `UUIDField` | - |
+| `admin_name` | `CharField` | - |
+| `admin_role` | `CharField` | - |
+| `points_delta` | `SmallIntegerField` | - |
+| `points_before` | `PositiveSmallIntegerField` | - |
+| `points_after` | `PositiveSmallIntegerField` | - |
+| `penalty_month` | `DateField` | - |
+| `reason` | `TextField` | - |
+| `report_verified` | `BooleanField` | - |
+| `incident_reference` | `CharField` | Blank=True |
+| `booking_id_snapshot` | `UUIDField` | Null=True, Blank=True |
+| `created_at` | `DateTimeField` | Blank=True |
+
 ### `tbl_worker_status_history`
 - **Database Table:** `tbl_worker_status_history`
 

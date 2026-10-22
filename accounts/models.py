@@ -6,6 +6,7 @@ from django.core.exceptions import ValidationError
 from django.db.models.expressions import RawSQL
 from .penalties import current_penalty_month
 import uuid 
+from .penalty_models import PenaltyAdjustment  # Register the feature model with this app.
 
 
 class tbl_worker_status_history(models.Model):

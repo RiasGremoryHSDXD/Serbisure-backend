@@ -216,11 +216,13 @@ class BookingTransactionTestCase(TransactionTestCase):
             raise RuntimeError('Audit fixture cleanup requires an isolated local test database.')
         with connection.cursor() as cursor:
             cursor.execute('ALTER TABLE tbl_account_access_audit DISABLE TRIGGER account_access_audit_immutable')
+            cursor.execute('ALTER TABLE tbl_penalty_adjustment DISABLE TRIGGER penalty_adjustment_immutable')
         try:
             return super()._fixture_teardown()
         finally:
             with connection.cursor() as cursor:
                 cursor.execute('ALTER TABLE tbl_account_access_audit ENABLE TRIGGER account_access_audit_immutable')
+                cursor.execute('ALTER TABLE tbl_penalty_adjustment ENABLE TRIGGER penalty_adjustment_immutable')
 
 
 class ConcurrentAcceptanceTests(BookingTransactionTestCase):

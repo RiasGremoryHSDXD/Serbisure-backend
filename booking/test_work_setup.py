@@ -84,13 +84,47 @@ class WorkSetupTests(APITestCase):
 
 
 class WorkSetupMigrationTests(TransactionTestCase):
+    def _fixture_teardown(self):
+        if connection.vendor != 'postgresql':
+            return super()._fixture_teardown()
+        if (not connection.settings_dict['NAME'].startswith('test_')
+                or connection.settings_dict['HOST'] not in ('localhost', '127.0.0.1', '::1')):
+            raise RuntimeError('Audit fixture cleanup requires an isolated local test database.')
+        tables = connection.introspection.table_names()
+        protected = [(table, trigger) for table, trigger in (
+            ('tbl_account_access_audit', 'account_access_audit_immutable'),
+            ('tbl_penalty_adjustment', 'penalty_adjustment_immutable'),
+        ) if table in tables]
+        with connection.cursor() as cursor:
+            for table, trigger in protected:
+                cursor.execute(f'ALTER TABLE {table} DISABLE TRIGGER {trigger}')
+        try:
+            return super()._fixture_teardown()
+        finally:
+            with connection.cursor() as cursor:
+                for table, trigger in protected:
+                    cursor.execute(f'ALTER TABLE {table} ENABLE TRIGGER {trigger}')
+
     def test_backfill_uses_only_unambiguous_opening_setup_not_duration_or_instructions(self):
         owner = User.objects.create_user(email='setup-migration@test.com', username='setup-migration', password='test', account_type='Homeowner')
         previous = [('booking', '0012_explicit_compensation_and_transitions')]
-        latest = [('booking', '0014_tbl_booking_daily_end_time_and_more'), ('chat', '0006_tbl_chat_message_booking_proposal_and_more')]
+        target = [('booking', '0014_tbl_booking_daily_end_time_and_more'), ('chat', '0006_tbl_chat_message_booking_proposal_and_more')]
         executor = MigrationExecutor(connection)
+        latest = executor.loader.graph.leaf_nodes()
+        if (not connection.settings_dict['NAME'].startswith('test_')
+                or connection.settings_dict['HOST'] not in ('localhost', '127.0.0.1', '::1')):
+            raise RuntimeError('Migration fixtures require an isolated local test database.')
         executor.migrate(previous)
+        retained_points_column = False
         try:
+            # Migration 0015 deliberately retains this physical column on rollback.
+            # Historical inserts need a temporary default in this disposable DB.
+            if connection.vendor == 'postgresql':
+                with connection.cursor() as cursor:
+                    retained_points_column = any(column.name == 'cancellation_penalty_points'
+                        for column in connection.introspection.get_table_description(cursor, 'tbl_booking'))
+                    if retained_points_column:
+                        cursor.execute('ALTER TABLE tbl_booking ALTER COLUMN cancellation_penalty_points SET DEFAULT 0')
             OldBooking = executor.loader.project_state(previous).apps.get_model('booking', 'tbl_booking')
             examples = [
                 ('Looking for long-term work on a stay-out arrangement.', 'stay_out'),
@@ -104,10 +138,13 @@ class WorkSetupMigrationTests(TransactionTestCase):
                 row = OldBooking.objects.create(poster_id_id=owner.pk, booking_type='long_term', rate_amount='8000', rate_period='month',
                     service_category=['Cleaning'], start_time=timezone.now()+timedelta(days=2), special_instruction=text)
                 rows.append((row.pk, expected, text))
-            MigrationExecutor(connection).migrate(latest)
+            MigrationExecutor(connection).migrate(target)
             for pk, expected, text in rows:
                 row = tbl_booking.objects.get(pk=pk)
                 self.assertEqual(row.work_setup, expected)
                 self.assertEqual(row.special_instruction, text)
         finally:
+            if retained_points_column:
+                with connection.cursor() as cursor:
+                    cursor.execute('ALTER TABLE tbl_booking ALTER COLUMN cancellation_penalty_points DROP DEFAULT')
             MigrationExecutor(connection).migrate(latest)
