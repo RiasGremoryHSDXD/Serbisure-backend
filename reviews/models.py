@@ -52,6 +52,10 @@ class tbl_review(models.Model):
         choices=NLP_TYPE_CHOICES
     )
 
+    # Empty metadata identifies historic labels whose inference source was not recorded.
+    sentiment_analysis = models.JSONField(default=dict, blank=True)
+    submission_key = models.UUIDField(null=True, blank=True, editable=False)
+
     rating = models.IntegerField(
         validators=[
             MinValueValidator(1),
@@ -67,6 +71,7 @@ class tbl_review(models.Model):
     class Meta:
         db_table = 'tbl_review'
         constraints = [
+            UniqueConstraint(fields=['reviewer_id', 'submission_key'], name='unique_review_submission_key'),
             CheckConstraint(
                 condition=Q(nlp_sentiment__in=['Positive', 'Negative', 'Neutral']),
                 name='valid_nlp_sentiment_enum'

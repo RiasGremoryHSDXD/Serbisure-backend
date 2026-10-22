@@ -1,11 +1,19 @@
 from rest_framework import serializers
 from decimal import Decimal
-from .models import tbl_booking, tbl_booking_assignment, tbl_booking_proposal
-from .wage_policy import get_minimum_daily_wage, get_monthly_equivalent
+from .models import tbl_booking, tbl_booking_assignment, tbl_booking_proposal, tbl_saved_post
+from .wage_policy import validate_rate, DOLE_CONTRACT_PDF_URL
 from django.utils import timezone
+from .services import PH_TIME
 from reviews.models import tbl_review
 from django.db.models import Avg
 from core.utils import get_signed_cloudinary_url
+
+
+class BookingCancellationSerializer(serializers.Serializer):
+    reason = serializers.CharField(max_length=255, allow_blank=False,
+        error_messages={'required': 'Choose a cancellation reason.', 'blank': 'Choose a cancellation reason.'})
+    expected_points = serializers.IntegerField(min_value=0, max_value=2, required=False)
+    action = serializers.ChoiceField(choices=['cancel', 'request', 'reject'], required=False)
 
 
 def get_signed_avatar(user):
@@ -16,6 +24,7 @@ def get_signed_avatar(user):
 
 
 class BookingSerializer(serializers.ModelSerializer):
+    work_setup = serializers.ChoiceField(choices=tbl_booking.WORK_SETUP_CHOICES, required=True)
     zip_code = serializers.CharField(max_length=4, required=False, default='9000', allow_blank=True)
     region = serializers.CharField(max_length=100, required=False, allow_blank=True, allow_null=True)
     province = serializers.CharField(max_length=100, required=False, allow_blank=True, allow_null=True)
@@ -29,6 +38,10 @@ class BookingSerializer(serializers.ModelSerializer):
         fields = [
             'booking_id',
             'booking_type',
+            'work_setup',
+            'work_days',
+            'daily_start_time',
+            'daily_end_time',
             'booking_status',
             'service_category',
             'start_time',
@@ -42,11 +55,13 @@ class BookingSerializer(serializers.ModelSerializer):
             'floor_number',
             'zip_code',
             'special_instruction',
-            'daily_rate',
+            'rate_amount',
+            'rate_period',
+            'rate_needs_review',
             'poster_id',
             'createdAt'
         ]
-        read_only_fields = ['booking_id', 'booking_status', 'poster_id', 'createdAt']
+        read_only_fields = ['booking_id', 'booking_status', 'poster_id', 'createdAt', 'rate_needs_review']
 
     def validate(self, data):
         # Gracefully handle and discard deprecated service_address if passed
@@ -60,9 +75,28 @@ class BookingSerializer(serializers.ModelSerializer):
             if base_services.issubset(current_set) or ('All-around' in current_set and len(current_set) > 1):
                 data['service_category'] = ['All-around']
 
+        days = data.get('work_days')
+        if days and len(set(days)) != len(days):
+            raise serializers.ValidationError({'work_days': 'Select each working day only once.'})
+        daily_start, daily_end = data.get('daily_start_time'), data.get('daily_end_time')
+        if (daily_start is None) != (daily_end is None):
+            raise serializers.ValidationError({'daily_end_time': 'Provide both daily working times.'})
+        if daily_start and daily_end and daily_start >= daily_end:
+            raise serializers.ValidationError({'daily_end_time': 'The end of the shift must be after its start.'})
+
         now = timezone.now()
         start_time = data.get('start_time')
         end_time = data.get('end_time')
+
+        # Public posts and chat offers use the same Philippine schedule validation.
+        for field, clock in (('start_time', daily_start), ('end_time', daily_end)):
+            stamp = data.get(field)
+            if stamp and clock and stamp.astimezone(PH_TIME).time().replace(tzinfo=None) != clock:
+                raise serializers.ValidationError({field: 'The schedule must match the selected working time in the Philippines.'})
+        if start_time and days:
+            start_day = ['M', 'T', 'W', 'Th', 'F', 'S', 'Su'][start_time.astimezone(PH_TIME).weekday()]
+            if start_day not in days:
+                raise serializers.ValidationError({'work_days': 'The start date must fall on a selected working day.'})
 
         if start_time and start_time <= now: 
             raise serializers.ValidationError({"start_time": "Start time must be in the future."})
@@ -73,50 +107,20 @@ class BookingSerializer(serializers.ModelSerializer):
         if (start_time and end_time) and end_time <= start_time:
             raise serializers.ValidationError({"end_time": "End time must be strictly after the start time."})
 
-        # Batas Kasambahay (RA 10361) statutory minimum wage enforcement for long-term services
         booking_type = data.get('booking_type') or (self.instance.booking_type if self.instance else None)
-        daily_rate = data.get('daily_rate') if 'daily_rate' in data else (self.instance.daily_rate if self.instance else None)
-        
-        street = data.get('street') or (self.instance.street if self.instance else '')
-        barangay = data.get('barangay') or (self.instance.barangay if self.instance else '')
-        city = data.get('city') or (self.instance.city if self.instance else '')
-        province = data.get('province') or (self.instance.province if self.instance else '')
-        zip_code = data.get('zip_code') or (self.instance.zip_code if self.instance else '9000')
-        data['zip_code'] = zip_code
-        full_address = f"{street} {barangay} {city} {province} {zip_code}".strip()
+        amount = data.get('rate_amount', self.instance.rate_amount if self.instance else None)
+        region = data.get('region', self.instance.region if self.instance else '')
+        address = ' '.join(str(data.get(key, getattr(self.instance, key, '') if self.instance else '') or '')
+                           for key in ('street', 'barangay', 'city', 'province', 'zip_code'))
+        validate_rate(amount, booking_type, region, address, period=data.get('rate_period'))
+        if data.get('rate_period') is None:
+            raise serializers.ValidationError({'rate_period': 'Specify day for short-term or month for long-term.'})
 
-        if daily_rate is not None:
-            if not isinstance(daily_rate, Decimal):
-                try:
-                    daily_rate = Decimal(str(daily_rate))
-                except Exception:
-                    raise serializers.ValidationError({"daily_rate": "Daily rate must be a valid number."})
-
-            if not daily_rate.is_finite() or daily_rate < Decimal('1.00'):
-                raise serializers.ValidationError({"daily_rate": "Daily rate must be at least ₱1.00."})
-
-            if daily_rate > Decimal('999999.99'):
-                raise serializers.ValidationError({"daily_rate": "Daily rate cannot exceed ₱999,999.99."})
-
-            if booking_type == 'long_term':
-                min_wage = get_minimum_daily_wage('long_term', full_address)
-                if daily_rate < min_wage:
-                    approx_monthly = get_monthly_equivalent(min_wage)
-                    raise serializers.ValidationError({
-                        "daily_rate": (
-                            f"Under Batas Kasambahay (RA 10361), the minimum daily wage for long-term "
-                            f"domestic service in this region is ₱{min_wage:.2f}/day (approx. ₱{approx_monthly:,.2f}/month)."
-                        )
-                    })
-
-        # Sanity check: Long-term domestic service duration cannot be under 24 hours
+        # Platform minimum uses Philippine calendar dates, not shift hours.
         if booking_type == 'long_term' and start_time and end_time:
-            if (end_time - start_time).total_seconds() < 86400:
+            if (end_time.astimezone(PH_TIME).date() - start_time.astimezone(PH_TIME).date()).days < 30:
                 raise serializers.ValidationError({
-                    "booking_type": (
-                        "Long-term bookings are for ongoing domestic employment lasting multiple days or months. "
-                        "For tasks or shifts under 24 hours, please select Short-term."
-                    )
+                    'end_time': 'SerbiSure requires at least 30 days for long-term posts. Choose a later end date.'
                 })
 
         return data
@@ -126,6 +130,7 @@ class BookingFeedSerializer(serializers.ModelSerializer):
     profile_link = serializers.SerializerMethodField()
     name = serializers.SerializerMethodField()
     poster_account_type = serializers.SerializerMethodField()
+    poster_verification_status = serializers.CharField(source='poster_id.verification_status', read_only=True)
     full_address = serializers.ReadOnlyField()
 
     class Meta:
@@ -134,7 +139,12 @@ class BookingFeedSerializer(serializers.ModelSerializer):
             'booking_id',
             'poster_id',
             'poster_account_type',
+            'poster_verification_status',
             'booking_type',
+            'work_setup',
+            'work_days',
+            'daily_start_time',
+            'daily_end_time',
             'booking_status',
             'profile_link',
             'name',
@@ -147,7 +157,9 @@ class BookingFeedSerializer(serializers.ModelSerializer):
             'floor_number',
             'zip_code',
             'service_category',
-            'daily_rate',
+            'rate_amount',
+            'rate_period',
+            'rate_needs_review',
             'special_instruction',
             'start_time',
             'end_time',
@@ -168,24 +180,38 @@ class BookingFeedSerializer(serializers.ModelSerializer):
         return get_signed_avatar(obj.poster_id)
 
 
+class PublicPendingPostSerializer(BookingFeedSerializer):
+    viewer_proposal = serializers.SerializerMethodField()
+
+    class Meta(BookingFeedSerializer.Meta):
+        fields = BookingFeedSerializer.Meta.fields + ['viewer_proposal']
+
+    def get_viewer_proposal(self, obj):
+        proposals = getattr(obj, 'viewer_proposals', [])
+        if not proposals:
+            return None
+        proposal = proposals[0]
+        return {'proposal_id': str(proposal.proposal_id), 'status': proposal.status}
+
+
 class BookingDetailSerializer(serializers.ModelSerializer):
     poster = serializers.SerializerMethodField()
     assigned_partner = serializers.SerializerMethodField()
+    recipient = serializers.SerializerMethodField()
     has_reviewed = serializers.SerializerMethodField()
     proposals_count = serializers.SerializerMethodField()
     full_address = serializers.ReadOnlyField()
-    cancel_requested_by = serializers.SerializerMethodField()
-    can_cancel = serializers.SerializerMethodField()
-    cancellation_deadline = serializers.SerializerMethodField()
-    is_cancel_requested = serializers.SerializerMethodField()
-    cancel_requested_by_me = serializers.SerializerMethodField()
-    pending_cancel_approval = serializers.SerializerMethodField()
+    contract_summary = serializers.SerializerMethodField()
 
     class Meta:
         model = tbl_booking
         fields = [
             'booking_id',
             'booking_type',
+            'work_setup',
+            'work_days',
+            'daily_start_time',
+            'daily_end_time',
             'booking_status',
             'service_category',
             'start_time',
@@ -199,21 +225,49 @@ class BookingDetailSerializer(serializers.ModelSerializer):
             'floor_number',
             'zip_code',
             'special_instruction',
-            'daily_rate',
+            'rate_amount',
+            'rate_period',
+            'rate_needs_review',
             'createdAt',
+            'recipient_id',
+            'recipient',
             'poster',
             'assigned_partner',
             'has_reviewed',
             'proposals_count',
-            'cancel_requested_by',
-            'cancel_requested_at',
+            'started_at',
+            'completed_at',
+            'contract_summary',
             'cancellation_reason',
-            'can_cancel',
-            'cancellation_deadline',
-            'is_cancel_requested',
-            'cancel_requested_by_me',
-            'pending_cancel_approval',
+            'cancelled_by',
+            'cancelled_at',
+            'cancellation_penalty_points',
         ]
+
+    def get_contract_summary(self, obj):
+        request = self.context.get('request')
+        assignment = obj.assignments.select_related('accepter_id').first()
+        if (obj.booking_type != 'long_term' or obj.booking_status not in ['Accepted', 'InProgress', 'Completed']
+                or not request or not assignment
+                or request.user.pk not in (obj.poster_id_id, assignment.accepter_id_id)):
+            return None
+        return {
+            'booking_id': str(obj.pk),
+            'service_category': obj.service_category,
+            'work_setup': obj.work_setup,
+            'work_days': obj.work_days,
+            'daily_start_time': obj.daily_start_time.isoformat() if obj.daily_start_time else None,
+            'daily_end_time': obj.daily_end_time.isoformat() if obj.daily_end_time else None,
+            'rate_amount': None if obj.rate_needs_review else str(obj.rate_amount),
+            'rate_needs_review': obj.rate_needs_review,
+            'rate_period': obj.rate_period,
+            'start_date': obj.start_time.isoformat(),
+            'end_date': obj.end_time.isoformat() if obj.end_time else None,
+            'location': obj.full_address,
+            'contract_pdf_url': request.build_absolute_uri('/api/v1/booking/contract-template/'),
+            'source_url': DOLE_CONTRACT_PDF_URL,
+            'notice': 'Print and complete the DOLE form, have both parties sign, and submit a physical copy to your local Barangay Kasambahay Desk. The employer is responsible for registration under RA 10361 Section 17. SerbiSure does not digitally sign or register this contract.',
+        }
 
     def get_poster(self, obj):
         user = obj.poster_id
@@ -222,7 +276,7 @@ class BookingDetailSerializer(serializers.ModelSerializer):
         full_name = f"{first} {last}".strip() or user.username
         
         avg_rating = tbl_review.objects.filter(reviewee_id=user).aggregate(avg=Avg('rating'))['avg']
-        rating = round(float(avg_rating), 1) if avg_rating is not None else 5.0
+        rating = round(float(avg_rating), 1) if avg_rating is not None else 0.0
 
         return {
             'id': str(user.id),
@@ -234,6 +288,15 @@ class BookingDetailSerializer(serializers.ModelSerializer):
             'contact_number': user.contact_number if user.contact_number else None,
         }
 
+    def get_recipient(self, obj):
+        user = obj.recipient_id
+        if not user:
+            return None
+        return {'id': str(user.pk), 'name': (user.first_name + ' ' + user.last_name).strip() or user.username,
+                'account_type': user.account_type, 'verification_status': user.verification_status,
+                'profile_link': get_signed_avatar(user),
+                'rating': round(float(tbl_review.objects.filter(reviewee_id=user).aggregate(avg=Avg('rating'))['avg'] or 0), 1)}
+
     def get_assigned_partner(self, obj):
         assignment = obj.assignments.select_related('accepter_id').first()
         if not assignment or not assignment.accepter_id:
@@ -244,7 +307,7 @@ class BookingDetailSerializer(serializers.ModelSerializer):
         full_name = f"{first} {last}".strip() or user.username
         
         avg_rating = tbl_review.objects.filter(reviewee_id=user).aggregate(avg=Avg('rating'))['avg']
-        rating = round(float(avg_rating), 1) if avg_rating is not None else 5.0
+        rating = round(float(avg_rating), 1) if avg_rating is not None else 0.0
 
         return {
             'id': str(user.id),
@@ -266,61 +329,13 @@ class BookingDetailSerializer(serializers.ModelSerializer):
     def get_proposals_count(self, obj):
         return obj.proposals.count()
 
-    def get_cancel_requested_by(self, obj):
-        if not obj.cancel_requested_by:
-            return None
-        u = obj.cancel_requested_by
-        first = u.first_name or ''
-        last = u.last_name or ''
-        full_name = f"{first} {last}".strip() or u.username
-        return {
-            'id': str(u.id),
-            'name': full_name,
-            'account_type': u.account_type,
-        }
-
-    def get_cancellation_deadline(self, obj):
-        if obj.booking_status in ['Accepted', 'InProgress']:
-            assignment = obj.assignments.first()
-            confirmed_at = assignment.accepted_at if (assignment and assignment.accepted_at) else obj.createdAt
-            if confirmed_at:
-                from datetime import timedelta
-                return (confirmed_at + timedelta(hours=2)).isoformat()
-        return None
-
-    def get_can_cancel(self, obj):
-        if obj.booking_status == 'Pending':
-            return True
-        if obj.booking_status in ['Accepted', 'InProgress']:
-            assignment = obj.assignments.first()
-            confirmed_at = assignment.accepted_at if (assignment and assignment.accepted_at) else obj.createdAt
-            if confirmed_at:
-                from django.utils import timezone
-                from datetime import timedelta
-                return timezone.now() <= (confirmed_at + timedelta(hours=2))
-        return False
-
-    def get_is_cancel_requested(self, obj):
-        return bool(obj.cancel_requested_by)
-
-    def get_cancel_requested_by_me(self, obj):
-        request = self.context.get('request')
-        if not request or not request.user or not request.user.is_authenticated:
-            return False
-        return bool(obj.cancel_requested_by and obj.cancel_requested_by == request.user)
-
-    def get_pending_cancel_approval(self, obj):
-        request = self.context.get('request')
-        if not request or not request.user or not request.user.is_authenticated:
-            return False
-        return bool(obj.cancel_requested_by and obj.cancel_requested_by != request.user)
-
 
 class BookingProposalSerializer(serializers.ModelSerializer):
     proposer_name = serializers.SerializerMethodField()
     proposer_role = serializers.SerializerMethodField()
     proposer_avatar = serializers.SerializerMethodField()
     proposer_rating = serializers.SerializerMethodField()
+    rate_period = serializers.CharField(source='booking_id.rate_period', read_only=True)
 
     class Meta:
         model = tbl_booking_proposal
@@ -333,6 +348,7 @@ class BookingProposalSerializer(serializers.ModelSerializer):
             'proposer_avatar',
             'proposer_rating',
             'proposed_rate',
+            'rate_period',
             'message',
             'status',
             'createdAt',
@@ -353,4 +369,26 @@ class BookingProposalSerializer(serializers.ModelSerializer):
 
     def get_proposer_rating(self, obj):
         avg_rating = tbl_review.objects.filter(reviewee_id=obj.proposer_id).aggregate(avg=Avg('rating'))['avg']
-        return round(float(avg_rating), 1) if avg_rating is not None else 5.0
+        return round(float(avg_rating), 1) if avg_rating is not None else 0.0
+
+
+class SavedPostItemSerializer(serializers.ModelSerializer):
+    """
+    Serializes a tbl_saved_post record with full embedded booking details 
+    formatted to match the mobile feed directly.
+    """
+    saved_id = serializers.UUIDField(read_only=True)
+    saved_at = serializers.DateTimeField(source='created_at', read_only=True)
+    booking = BookingFeedSerializer(read_only=True)
+
+    class Meta:
+        model = tbl_saved_post
+        fields = ['saved_id', 'saved_at', 'booking']
+
+    def to_representation(self, instance):
+        if not instance.booking:
+            return None
+        data = BookingFeedSerializer(instance.booking).data
+        data['saved_id'] = str(instance.saved_id)
+        data['saved_at'] = instance.created_at.isoformat()
+        return data

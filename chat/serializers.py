@@ -2,13 +2,31 @@ from rest_framework import serializers
 from .models import tbl_chat_message, tbl_chat_reaction, ALLOWED_EMOJIS
 from django.contrib.auth import get_user_model
 from core.utils import get_signed_cloudinary_url
+from .services import assert_chat_access
 import cloudinary.utils
 import time
 
 User = get_user_model()
 
 
-class SendMessageSerializer(serializers.ModelSerializer):
+class ChatLanguageSerializer(serializers.ModelSerializer):
+    language_warning_acknowledged = serializers.BooleanField(default=False, write_only=True)
+    is_sensitive = serializers.SerializerMethodField()
+
+    def get_is_sensitive(self, obj):
+        from .moderation_rules import contains_offensive_language
+        return contains_offensive_language(obj.message_payload)
+
+    def validate_language(self, attrs):
+        from .moderation import inspect_chat_outgoing
+        acknowledged = attrs.pop('language_warning_acknowledged', False)
+        request = self.context.get('request')
+        if request and attrs.get('receiver_id'):
+            inspect_chat_outgoing(request.user, attrs['receiver_id'],
+                                  attrs.get('message_payload', '') or '', acknowledged)
+
+
+class SendMessageSerializer(ChatLanguageSerializer):
     """
     Serializer for validating and creating new text chat messages.
     """
@@ -30,6 +48,8 @@ class SendMessageSerializer(serializers.ModelSerializer):
             'receiver_id',
             'booking_id',
             'message_payload',
+            'language_warning_acknowledged',
+            'is_sensitive',
             'is_read',
             'createdAt'
         ]
@@ -41,6 +61,17 @@ class SendMessageSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("Message content cannot be blank or whitespace only.")
         return stripped
 
+    def create(self, validated_data):
+        from django.db import transaction
+        from .moderation import assert_messaging_allowed
+        with transaction.atomic():
+            ids = [validated_data['sender_id'].pk, validated_data['receiver_id'].pk]
+            people = {u.pk: u for u in User.objects.select_for_update().filter(pk__in=ids).order_by('pk')}
+            sender = people[ids[0]]
+            assert_chat_access(sender, people[ids[1]])
+            assert_messaging_allowed(sender, people[ids[1]])
+            return super().create(validated_data)
+
     def validate(self, attrs):
         request = self.context.get('request')
         receiver = attrs.get('receiver_id')
@@ -49,10 +80,18 @@ class SendMessageSerializer(serializers.ModelSerializer):
         if request and receiver and request.user == receiver:
             raise serializers.ValidationError({"receiver_id": "You cannot send a message to yourself."})
 
+        if request and receiver:
+            assert_chat_access(request.user, receiver)
+        self.validate_language(attrs)
+
+        booking = attrs.get('booking_id')
+        if booking and booking.recipient_id_id and (not request or
+                {request.user.pk, receiver.pk} != {booking.poster_id_id, booking.recipient_id_id}):
+            raise serializers.ValidationError({'booking_id': 'Private booking terms are only available to their participants.'})
         return attrs
 
 
-class SendImageMessageSerializer(serializers.ModelSerializer):
+class SendImageMessageSerializer(ChatLanguageSerializer):
     """
     Serializer for validating image attachments and optional captions.
     """
@@ -66,13 +105,13 @@ class SendImageMessageSerializer(serializers.ModelSerializer):
         }
     )
     message_payload = serializers.CharField(
-        max_length=200,
+        max_length=500,
         required=False,
         allow_blank=True,
         allow_null=True,
         default='',
         error_messages={
-            "max_length": "Caption cannot exceed 200 characters."
+            "max_length": "Caption cannot exceed 500 characters."
         }
     )
 
@@ -84,6 +123,8 @@ class SendImageMessageSerializer(serializers.ModelSerializer):
             'receiver_id',
             'booking_id',
             'message_payload',
+            'language_warning_acknowledged',
+            'is_sensitive',
             'image',
             'is_read',
             'createdAt'
@@ -145,6 +186,15 @@ class SendImageMessageSerializer(serializers.ModelSerializer):
         if request and receiver and request.user == receiver:
             raise serializers.ValidationError({"receiver_id": "You cannot send a message to yourself."})
 
+        if request and receiver:
+            assert_chat_access(request.user, receiver)
+        self.validate_language(attrs)
+
+        booking = attrs.get('booking_id')
+        if booking and booking.recipient_id_id and (not request or
+                {request.user.pk, receiver.pk} != {booking.poster_id_id, booking.recipient_id_id}):
+            raise serializers.ValidationError({'booking_id': 'Private booking terms are only available to their participants.'})
+
         return attrs
 
 
@@ -176,12 +226,13 @@ class ReactMessageSerializer(serializers.Serializer):
         return val
 
 
-class ChatMessageSerializer(serializers.ModelSerializer):
+class ChatMessageSerializer(ChatLanguageSerializer):
     """
     Serializer for individual messages in a conversation thread.
     Includes sender indicator, image signed URL, reaction summary, and personal reaction.
     """
     is_sender = serializers.SerializerMethodField()
+    booking_offer = serializers.SerializerMethodField()
     image_url = serializers.SerializerMethodField()
     reaction_summary = serializers.SerializerMethodField()
     my_reaction = serializers.SerializerMethodField()
@@ -197,12 +248,38 @@ class ChatMessageSerializer(serializers.ModelSerializer):
             'image_public_id',
             'image_url',
             'message_payload',
+            'is_sensitive',
             'is_read',
             'is_sender',
+            'booking_offer',
             'reaction_summary',
             'my_reaction',
             'createdAt'
         ]
+
+    def get_booking_offer(self, obj):
+        if not obj.is_booking_offer or not obj.booking_id:
+            return None
+        request = self.context.get('request')
+        if not request or request.user.pk not in (obj.sender_id_id, obj.receiver_id_id):
+            return None
+        from booking.serializers import BookingDetailSerializer
+        booking = obj.booking_id
+        proposal = obj.booking_proposal
+        assignment = booking.assignments.first()
+        pair = {obj.sender_id_id, obj.receiver_id_id}
+        confirmed = (booking.booking_status in ('Accepted', 'InProgress', 'Completed')
+                     and assignment is not None and {booking.poster_id_id, assignment.accepter_id_id} == pair
+                     and (proposal is None or proposal.status == 'Accepted'))
+        can_respond = booking.booking_status == 'Pending' and (
+            (proposal is not None and proposal.status == 'Pending' and request.user.pk == booking.poster_id_id)
+            or (proposal is None and request.user.pk == booking.recipient_id_id))
+        return {'booking': BookingDetailSerializer(booking, context={'request': request}).data,
+                'proposal_id': str(proposal.pk) if proposal else None,
+                'proposed_rate': str(proposal.proposed_rate) if proposal else None,
+                'status': 'Confirmed' if confirmed else proposal.status if proposal else booking.booking_status,
+                'can_respond': can_respond,
+                'sender_name': (obj.sender_id.first_name + ' ' + obj.sender_id.last_name).strip() or obj.sender_id.username}
 
     def get_is_sender(self, obj):
         request = self.context.get('request')
@@ -254,6 +331,32 @@ class ChatInboxSerializer(serializers.Serializer):
 
     def get_partner_profile_image(self, obj):
         return get_signed_cloudinary_url(obj.get('partner_profile_link'), as_avatar=True)
+
+
+class SupportContactSerializer(serializers.Serializer):
+    id = serializers.UUIDField()
+    name = serializers.SerializerMethodField()
+    account_type = serializers.CharField()
+    barangay = serializers.CharField(allow_blank=True, allow_null=True)
+    avatar = serializers.SerializerMethodField()
+
+    def get_name(self, obj):
+        return obj.get_full_name().strip() or obj.username
+
+    def get_avatar(self, obj):
+        return get_signed_cloudinary_url(obj.profile_link, as_avatar=True)
+
+
+class BarangaySupportSerializer(serializers.Serializer):
+    name = serializers.CharField(allow_blank=True)
+    available = serializers.BooleanField()
+    contacts = SupportContactSerializer(many=True)
+    message = serializers.CharField(allow_blank=True)
+
+
+class SupportContactsSerializer(serializers.Serializer):
+    superadmins = SupportContactSerializer(many=True)
+    barangay = BarangaySupportSerializer()
 
 
 class MarkMessageReadSerializer(serializers.ModelSerializer):

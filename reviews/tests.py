@@ -6,6 +6,8 @@ from django.utils import timezone
 from django.core.cache import cache
 import datetime
 import uuid
+from unittest.mock import patch
+from .sentiment import SentimentUnavailable
 from decimal import Decimal
 
 from booking.models import tbl_booking, tbl_booking_assignment
@@ -17,6 +19,11 @@ User = get_user_model()
 class ReviewTests(APITestCase):
 
     def setUp(self):
+        self.analyzer = patch('reviews.views.analyze_feedback', return_value={
+            'label': 'Positive', 'confidence': .921, 'probabilities': {'Positive': .921, 'Negative': .0525, 'Neutral': .0265},
+            'source': 'huggingface', 'model': 'Rhoii/cebuano-taglish-sentiment', 'analyzed_at': timezone.now().isoformat(),
+        }).start()
+        self.addCleanup(patch.stopall)
         # 1. Verified Homeowner (Poster)
         self.homeowner = User.objects.create_user(
             email='homeowner@test.com',
@@ -68,7 +75,7 @@ class ReviewTests(APITestCase):
         # 5. Completed Booking (Homeowner posted, Kasambahay accepted)
         self.completed_booking = tbl_booking.objects.create(
             poster_id=self.homeowner,
-            booking_type='short_term',
+            booking_type='short_term', rate_period='day',
             booking_status='Completed',
             service_category=['Cleaning'],
             start_time=timezone.now() - datetime.timedelta(days=2),
@@ -79,7 +86,7 @@ class ReviewTests(APITestCase):
             province='Misamis Oriental',
             region='Region X - Northern Mindanao',
             zip_code='9000',
-            daily_rate=Decimal('500.00')
+            rate_amount=Decimal('500.00')
         )
 
         # Assign Kasambahay to completed booking
@@ -91,7 +98,7 @@ class ReviewTests(APITestCase):
         # 6. Pending Booking (Not Completed — cannot review)
         self.pending_booking = tbl_booking.objects.create(
             poster_id=self.homeowner,
-            booking_type='short_term',
+            booking_type='short_term', rate_period='day',
             booking_status='Pending',
             service_category=['Cleaning'],
             start_time=timezone.now() + datetime.timedelta(days=1),
@@ -102,7 +109,7 @@ class ReviewTests(APITestCase):
             province='Misamis Oriental',
             region='Region X - Northern Mindanao',
             zip_code='9000',
-            daily_rate=Decimal('500.00')
+            rate_amount=Decimal('500.00')
         )
 
         self.create_url = reverse('review-create')
@@ -226,8 +233,8 @@ class ReviewTests(APITestCase):
         }, **headers)
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
-    def test_invalid_nlp_sentiment_rejected(self):
-        """User tries to send an arbitrary string as nlp_sentiment."""
+    def test_client_sentiment_cannot_override_model(self):
+        """Even arbitrary client labels are ignored; the server owns classification."""
         self.client.force_authenticate(user=self.homeowner)
         headers = {'HTTP_IDEMPOTENCY_KEY': str(uuid.uuid4())}
         response = self.client.post(self.create_url, {
@@ -236,8 +243,9 @@ class ReviewTests(APITestCase):
             "unstructured_feedback": "Great service indeed!",
             "nlp_sentiment": "HappyVibes"  # Invalid — not in choices
         }, **headers)
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("nlp_sentiment", response.data)
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["data"]["nlp_sentiment"], "Positive")
+        self.assertEqual(tbl_review.objects.get().sentiment_analysis["source"], "huggingface")
 
     # ─────────────────────────────────────────────────────────────────────
     # HAPPY PATHS
@@ -304,7 +312,9 @@ class ReviewTests(APITestCase):
         r2 = self.client.post(self.create_url, payload, **headers)
 
         self.assertEqual(r1.status_code, status.HTTP_201_CREATED)
-        self.assertEqual(r2.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(r2.status_code, status.HTTP_200_OK)
+        self.assertEqual(r1.data["data"], r2.data["data"])
+        self.analyzer.assert_called_once()
         self.assertEqual(tbl_review.objects.count(), 1)  # Only one saved!
 
     def test_different_idempotency_key_is_blocked_by_db_duplicate_check(self):
@@ -563,3 +573,84 @@ class ReviewTests(APITestCase):
         response = self.client.get(user_reviews_url)
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
         self.assertIn("User not found", response.data['detail'])
+
+    def test_provider_failure_never_saves_neutral_and_can_retry(self):
+        self.client.force_authenticate(user=self.homeowner)
+        key = {'HTTP_IDEMPOTENCY_KEY': str(uuid.uuid4())}
+        body = {'booking_id': str(self.completed_booking.pk), 'rating': 1,
+                'unstructured_feedback': 'Dili kabalo mo lipyo', 'nlp_sentiment': 'Neutral'}
+        self.analyzer.side_effect = SentimentUnavailable('provider_error_event')
+        failed = self.client.post(self.create_url, body, **key)
+        self.assertEqual(failed.status_code, 503)
+        self.assertEqual(failed.data['code'], 'sentiment_unavailable')
+        self.assertFalse(tbl_review.objects.exists())
+        self.analyzer.side_effect = None
+        self.analyzer.return_value = dict(self.analyzer.return_value, label='Negative')
+        saved = self.client.post(self.create_url, body, **key)
+        self.assertEqual(saved.status_code, 201)
+        self.assertEqual(saved.data['data']['nlp_sentiment'], 'Negative')
+        self.assertEqual(saved.data['data']['rating'], 1)
+
+    def test_replay_survives_cache_clear_and_rejects_changed_terms(self):
+        self.client.force_authenticate(user=self.homeowner)
+        key = {'HTTP_IDEMPOTENCY_KEY': str(uuid.uuid4())}
+        body = {'booking_id': str(self.completed_booking.pk), 'rating': 4,
+                'unstructured_feedback': 'The service was very good.'}
+        first = self.client.post(self.create_url, body, **key)
+        cache.clear()
+        replay = self.client.post(self.create_url, body, **key)
+        self.assertEqual(replay.status_code, 200)
+        self.assertEqual(first.data['data'], replay.data['data'])
+        changed = self.client.post(self.create_url, dict(body, rating=2), **key)
+        self.assertEqual(changed.status_code, 400)
+        self.assertEqual(tbl_review.objects.count(), 1)
+        self.analyzer.assert_called_once()
+
+    def test_submission_key_scoped_to_reviewer(self):
+        key = {'HTTP_IDEMPOTENCY_KEY': str(uuid.uuid4())}
+        body = {'booking_id': str(self.completed_booking.pk), 'rating': 4,
+                'unstructured_feedback': 'The service was very good.'}
+        self.client.force_authenticate(user=self.homeowner)
+        first = self.client.post(self.create_url, body, **key)
+        self.client.force_authenticate(user=self.kasambahay)
+        second = self.client.post(self.create_url, body, **key)
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(second.status_code, 201)
+        self.assertNotEqual(first.data['data']['review_id'], second.data['data']['review_id'])
+        self.assertEqual(tbl_review.objects.count(), 2)
+
+    def test_ineligible_review_never_calls_remote_model(self):
+        self.client.force_authenticate(user=self.bystander)
+        response = self.client.post(self.create_url, {
+            'booking_id': str(self.completed_booking.pk), 'rating': 4,
+            'unstructured_feedback': 'The service was very good.',
+        }, HTTP_IDEMPOTENCY_KEY=str(uuid.uuid4()))
+        self.assertEqual(response.status_code, 400)
+        self.analyzer.assert_not_called()
+
+    def test_legacy_reanalysis_dry_run_apply_and_failure(self):
+        from django.core.management import call_command
+        from io import StringIO
+        legacy = tbl_review.objects.create(booking_id=self.completed_booking,
+            reviewer_id=self.homeowner, reviewee_id=self.kasambahay, rating=1,
+            unstructured_feedback='Dili kabalo mo lipyo', nlp_sentiment='Neutral')
+        with patch('reviews.management.commands.reanalyze_reviews.analyze_feedback',
+                   return_value=dict(self.analyzer.return_value, label='Negative')) as model:
+            call_command('reanalyze_reviews', review_id=[str(legacy.pk)], stdout=StringIO())
+            legacy.refresh_from_db()
+            self.assertEqual(legacy.nlp_sentiment, 'Neutral')
+            self.assertEqual(legacy.sentiment_analysis, {})
+            model.side_effect = SentimentUnavailable('provider_error_event')
+            call_command('reanalyze_reviews', apply=True, review_id=[str(legacy.pk)], stdout=StringIO(), stderr=StringIO())
+            legacy.refresh_from_db()
+            self.assertEqual(legacy.nlp_sentiment, 'Neutral')
+            model.side_effect = None
+            call_command('reanalyze_reviews', apply=True, review_id=[str(legacy.pk)], stdout=StringIO())
+            legacy.refresh_from_db()
+            self.assertEqual(legacy.nlp_sentiment, 'Negative')
+            self.assertEqual(legacy.sentiment_analysis['legacy_label'], 'Neutral')
+            self.assertEqual(legacy.sentiment_analysis['source'], 'huggingface')
+            self.assertEqual(legacy.rating, 1)
+            model.reset_mock()
+            call_command('reanalyze_reviews', apply=True, review_id=[str(legacy.pk)], stdout=StringIO())
+            model.assert_not_called()

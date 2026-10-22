@@ -1,10 +1,62 @@
 from django.contrib.auth.models import AbstractUser, BaseUserManager
-from django.db import models
+from django.db import models, transaction
 from django.db.models import CheckConstraint, Q
 from django.core.validators import RegexValidator
 from django.core.exceptions import ValidationError
 from django.db.models.expressions import RawSQL
+from .penalties import current_penalty_month
 import uuid 
+from .penalty_models import PenaltyAdjustment  # Register the feature model with this app.
+
+
+class tbl_worker_status_history(models.Model):
+    """Immutable status and eligibility at an event; retained after account deletion."""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    worker = models.ForeignKey('tbl_user_profile', on_delete=models.SET_NULL, null=True, related_name='status_history')
+    worker_id_snapshot = models.UUIDField(editable=False)
+    status = models.BooleanField(help_text='True: Occupied; False: Available')
+    barangay = models.CharField(max_length=100, blank=True)
+    changed_at = models.DateTimeField(auto_now_add=True)
+    is_verified = models.BooleanField(default=False, help_text='Active worker with both required clearances approved at this event')
+    clearance_valid_until = models.DateField(null=True, blank=True)
+
+    class Meta:
+        db_table = 'tbl_worker_status_history'
+        indexes = [models.Index(fields=['worker_id_snapshot', '-changed_at'], name='worker_status_latest_idx')]
+
+
+class tbl_worker_profile(models.Model):
+    """Self-reported worker preferences; separate from agreed booking terms."""
+    user = models.OneToOneField('tbl_user_profile', on_delete=models.CASCADE, related_name='worker_profile')
+    service_categories = models.JSONField(default=list, blank=True)
+    work_setup = models.CharField(max_length=10, blank=True, choices=[('stay_in', 'Stay-in'), ('stay_out', 'Stay-out'), ('either', 'Either')])
+    engagement_preference = models.CharField(max_length=10, blank=True, choices=[('short_term', 'Short-term'), ('long_term', 'Long-term'), ('both', 'Both')])
+    desired_monthly_rate = models.DecimalField(max_digits=8, decimal_places=2, null=True, blank=True)
+    desired_daily_rate = models.DecimalField(max_digits=8, decimal_places=2, null=True, blank=True)
+    civil_status = models.CharField(max_length=15, blank=True, choices=[(value, value) for value in ('Single', 'Married', 'Widowed', 'Separated')])
+    number_of_children = models.PositiveSmallIntegerField(null=True, blank=True)
+    experience_level = models.CharField(max_length=10, blank=True, choices=[('new', 'First-time worker'), ('household', 'Own household experience'), ('paid', 'Previous paid work')])
+    experience_duration = models.CharField(max_length=10, blank=True, choices=[('under_1', 'Less than 1 year'), ('1_to_3', '1-3 years'), ('over_3', 'More than 3 years')])
+    experience_summary = models.CharField(max_length=300, blank=True)
+    practical_skills = models.JSONField(default=list, blank=True)
+    available_from = models.DateField(null=True, blank=True)
+    available_days = models.JSONField(default=list, blank=True)
+    preferred_shifts = models.JSONField(default=list, blank=True)
+    preferred_work_areas = models.JSONField(default=list, blank=True)
+    education = models.CharField(max_length=100, blank=True)
+    training = models.JSONField(default=list, blank=True)
+    references_available = models.BooleanField(default=False)
+    share_family_details = models.BooleanField(default=False)
+    share_contact_details = models.BooleanField(default=False)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'tbl_worker_profile'
+        constraints = [
+            models.CheckConstraint(condition=Q(number_of_children__isnull=True) | Q(number_of_children__lte=99), name='worker_children_0_to_99'),
+            models.CheckConstraint(condition=Q(desired_monthly_rate__isnull=True) | Q(desired_monthly_rate__gt=0), name='worker_monthly_rate_positive'),
+            models.CheckConstraint(condition=Q(desired_daily_rate__isnull=True) | Q(desired_daily_rate__gt=0), name='worker_daily_rate_positive'),
+        ]
 
 def validate_user_tags(value):
 
@@ -157,16 +209,6 @@ class tbl_user_profile(AbstractUser):
 
     is_active = models.BooleanField(
         default=True,
-    )
-
-    cancellation_strikes = models.PositiveIntegerField(
-        default=0,
-        help_text="Number of confirmed booking cancellations initiated by this user. 3 strikes lead to account restriction."
-    )
-
-    is_restricted = models.BooleanField(
-        default=False,
-        help_text="Designates whether the user's booking/posting privileges are restricted due to policy violations or 3 cancellation strikes."
     )
 
     is_staff = models.BooleanField(
@@ -359,14 +401,21 @@ class tbl_user_profile(AbstractUser):
         help_text="Kasambahay employment status: True if On the Job, False if Available"
     )
 
-    cancellation_strikes = models.PositiveIntegerField(
+    chat_suspended_until = models.DateTimeField(null=True, blank=True)
+    is_account_suspended = models.BooleanField(default=False)
+    suspended_by = models.ForeignKey('self', null=True, blank=True, on_delete=models.SET_NULL,
+                                    related_name='suspensions_issued')
+
+    penalty_points = models.IntegerField(
         default=0,
-        help_text="Number of confirmed booking cancellations initiated by this user. 3 strikes lead to account restriction."
+        help_text="Accumulated booking cancellation penalty points"
     )
+
+    penalty_month = models.DateField(default=current_penalty_month)
 
     is_restricted = models.BooleanField(
         default=False,
-        help_text="Designates whether the user's booking/posting privileges are restricted due to policy violations or 3 cancellation strikes."
+        help_text="Indicates whether user account is restricted from bookings"
     )
 
     user_about = models.TextField(
@@ -402,13 +451,47 @@ class tbl_user_profile(AbstractUser):
             if normalized:
                 self.contact_number = normalized
 
+        # Enforce exactly one active Barangay LGU account per barangay
+        if self.account_type == 'Barangay' and self.barangay:
+            import re
+            clean_b = re.sub(r'^(brgy\.?|barangay)\s+', '', self.barangay, flags=re.IGNORECASE).strip().lower()
+            existing_conflict = tbl_user_profile.objects.filter(
+                account_type='Barangay'
+            ).exclude(pk=self.pk)
+            for ex in existing_conflict:
+                ex_clean = re.sub(r'^(brgy\.?|barangay)\s+', '', ex.barangay or '', flags=re.IGNORECASE).strip().lower()
+                if ex_clean == clean_b:
+                    raise ValidationError({
+                        'barangay': f"An official LGU account for Barangay '{self.barangay}' already exists. Only one LGU account per barangay is allowed."
+                    })
+
     def save(self, *args, **kwargs):
         if self.contact_number:
             from core.utils import normalize_ph_phone_number
             normalized = normalize_ph_phone_number(self.contact_number)
             if normalized:
                 self.contact_number = normalized
-        super().save(*args, **kwargs)
+
+        # Standardize barangay name for Barangay LGU accounts and prevent duplicate save
+        if self.account_type == 'Barangay' and self.barangay:
+            import re
+            clean_b = re.sub(r'^(brgy\.?|barangay)\s+', '', self.barangay, flags=re.IGNORECASE).strip()
+            self.barangay = clean_b.title()
+
+            existing_conflict = tbl_user_profile.objects.filter(
+                account_type='Barangay',
+                barangay__iexact=self.barangay
+            ).exclude(pk=self.pk).exists()
+            if existing_conflict:
+                from django.db import IntegrityError
+                raise IntegrityError(f"unique_lgu_account_per_barangay: An account for Barangay '{self.barangay}' already exists.")
+        if self.account_type in ['Barangay', 'Admin']:
+            self.is_staff = True
+
+        with transaction.atomic(using=kwargs.get('using') or 'default'):
+            super().save(*args, **kwargs)
+            from .workforce import record_worker_status
+            record_worker_status(self.pk, using=self._state.db)
 
     def __str__(self):
         return self.username
@@ -442,6 +525,13 @@ class tbl_user_profile(AbstractUser):
             models.UniqueConstraint(
                 fields=['contact_number'],
                 name='unique_tbl_user_profile_contact_number'
+            ),
+
+            # Enforce strictly ONE account per barangay for Barangay LGU accounts
+            models.UniqueConstraint(
+                fields=['barangay'],
+                condition=Q(account_type='Barangay') & ~Q(barangay__isnull=True) & ~Q(barangay=''),
+                name='unique_lgu_account_per_barangay'
             ),
 
             CheckConstraint(

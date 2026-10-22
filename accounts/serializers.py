@@ -1,7 +1,9 @@
 from rest_framework import serializers
-from django.db import IntegrityError
+from django.db import IntegrityError, transaction
 from django.db.models import Q
 from .models import tbl_user_profile
+from .models import tbl_worker_profile
+from .worker_serializers import WorkerProfileSerializer
 from datetime import date
 from core.utils import (
     convert_title,
@@ -28,6 +30,7 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
     region = serializers.CharField(max_length=100, required=False, allow_blank=True)
     barangay = serializers.CharField(max_length=100, required=False, allow_blank=True)
     street = serializers.CharField(max_length=100, required=False, allow_blank=True)
+    worker_profile = WorkerProfileSerializer(required=False, write_only=True)
 
     class Meta: 
         model = tbl_user_profile
@@ -57,6 +60,7 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
             'verification_status', 
             'user_about',
             'user_tags',
+            'worker_profile',
         ]
         extra_kwargs = {
             'email': {
@@ -76,6 +80,7 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
         
         # 1. Take the password out of the data so we can securely hash it
         password = validated_data.pop('password')
+        worker_data = validated_data.pop('worker_profile', None)
 
         first_name = validated_data.get('first_name', '')
         middle_name = validated_data.get('middle_name', '')
@@ -87,17 +92,52 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
         validated_data['username'] = f"{combined}_{random_suffix}"
 
         try:
-            user = tbl_user_profile(**validated_data)
-            user.set_password(password)
-            user.save()
+            with transaction.atomic():
+                user = tbl_user_profile(**validated_data)
+                user.set_password(password)
+                user.save()
+                if user.account_type == 'Kasambahay':
+                    tbl_worker_profile.objects.create(user=user, **(worker_data or {}))
             return user
         except IntegrityError as e:
             err_str = str(e).lower()
-            if 'contact_number' in err_str:
+            if 'unique_lgu_account_per_barangay' in err_str or 'barangay' in err_str:
+                raise serializers.ValidationError({"barangay": ["An official Barangay LGU account already exists for this barangay. Only one LGU account per barangay is permitted."]})
+            elif 'contact_number' in err_str:
                 raise serializers.ValidationError({"contact_number": ["A user with this contact number is already registered."]})
             elif 'email' in err_str:
                 raise serializers.ValidationError({"email": ["A user with this email address is already registered."]})
             raise serializers.ValidationError({"detail": "An account with these details already exists."})
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        account_type = attrs.get('account_type')
+        if 'worker_profile' in attrs and account_type != 'Kasambahay':
+            raise serializers.ValidationError({'worker_profile': 'Worker details are only available for Kasambahay registration.'})
+        barangay = attrs.get('barangay')
+
+        if account_type == 'Barangay':
+            if not barangay or not str(barangay).strip():
+                raise serializers.ValidationError({
+                    "barangay": ["A valid barangay name is required when registering an official Barangay LGU account."]
+                })
+
+            clean_b = re.sub(r'^(brgy\.?|barangay)\s+', '', str(barangay), flags=re.IGNORECASE).strip()
+            # Standardize title case
+            attrs['barangay'] = clean_b.title()
+
+            existing = tbl_user_profile.objects.filter(
+                account_type='Barangay',
+                is_active=True
+            )
+            for ex in existing:
+                ex_clean = re.sub(r'^(brgy\.?|barangay)\s+', '', ex.barangay or '', flags=re.IGNORECASE).strip().lower()
+                if ex_clean == clean_b.lower():
+                    raise serializers.ValidationError({
+                        "barangay": [f"An official LGU account for Barangay {clean_b.title()} already exists. Only one LGU account per barangay is permitted."]
+                    })
+
+        return attrs
     
     # Mandatory Value in creating a account
     # def mandatory_field_account_creation(self, value):
@@ -241,8 +281,6 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
         token['email'] = user.email
         token['contact_number'] = user.contact_number
         token['show_contact_number'] = getattr(user, 'show_contact_number', True)
-        token['cancellation_strikes'] = getattr(user, 'cancellation_strikes', 0)
-        token['is_restricted'] = getattr(user, 'is_restricted', False)
         token['user_tags'] = user.user_tags or []
         token['region'] = user.region or ''
         token['province'] = user.province or ''
@@ -284,8 +322,6 @@ class CustomLoginSerializer(TokenObtainPairSerializer):
         token['email'] = user.email
         token['contact_number'] = user.contact_number
         token['show_contact_number'] = getattr(user, 'show_contact_number', True)
-        token['cancellation_strikes'] = getattr(user, 'cancellation_strikes', 0)
-        token['is_restricted'] = getattr(user, 'is_restricted', False)
         token['social_links'] = getattr(user, 'social_links', []) or []
         token['show_social_links'] = getattr(user, 'show_social_links', True)
         token['user_tags'] = user.user_tags or []
@@ -338,6 +374,8 @@ class CustomLoginSerializer(TokenObtainPairSerializer):
         if user.account_type in ['Admin', 'Barangay'] or user.is_superuser or user.is_staff:
             raise AuthenticationFailed("Wrong email or password. Please try again!")
 
+        from .authentication import assert_account_available
+        assert_account_available(user)
         self.user = user
 
         refresh = self.get_token(user)
@@ -360,18 +398,9 @@ class ProfileImageUploadSerializer(serializers.ModelSerializer):
         read_only_fields = ['profile_link']
 
     def update(self, instance, validated_data):
+        from .profile_images import save_profile_image
         image_file = validated_data.pop('profile_image')
-        
-        upload_result = cloudinary.uploader.upload(
-            image_file,
-            folder="serbisure_profiles/",
-            type="authenticated"
-        )
-
-        public_id = upload_result.get('public_id')
-        instance.profile_link = public_id
-        instance.save()
-        
+        self.context['upload_timings'] = save_profile_image(instance, image_file)
         return instance
 
     def to_representation(self, instance):
@@ -397,6 +426,19 @@ class UserTagsSerializer(serializers.ModelSerializer):
     class Meta:
         model = tbl_user_profile
         fields = ['user_tags']
+
+    def update(self, instance, validated_data):
+        with transaction.atomic():
+            user = tbl_user_profile.objects.select_for_update().get(pk=instance.pk)
+            user = super().update(user, validated_data)
+            if user.account_type == 'Kasambahay' and 'user_tags' in validated_data:
+                from .worker_serializers import SERVICES
+                aliases = {'Child Care': 'Child_care', 'Childcare': 'Child_care', 'Cook': 'Cooking'}
+                categories = list(dict.fromkeys(aliases.get(tag, tag) for tag in user.user_tags if aliases.get(tag, tag) in SERVICES))
+                categories = ['All-around'] if 'All-around' in categories or all(value in categories for value in SERVICES[:5]) else categories
+                setup = next(({'Stay-In': 'stay_in', 'Stay-Out': 'stay_out', 'Either': 'either'}[tag] for tag in user.user_tags if tag in {'Stay-In', 'Stay-Out', 'Either'}), '')
+                tbl_worker_profile.objects.update_or_create(user=user, defaults={'service_categories': categories, 'work_setup': setup})
+            return user
 
 
 class ContactPrivacySerializer(serializers.ModelSerializer):
@@ -672,14 +714,17 @@ class PublicProfileSerializer(serializers.ModelSerializer):
             'date_joined',
             'social_links',
             'show_social_links',
-            'cancellation_strikes',
-            'is_restricted',
         ]
         read_only_fields = fields
 
     def to_representation(self, instance):
         data = super().to_representation(instance)
-        if getattr(instance, 'show_contact_number', False):
+        # Barangay and Superadmin profiles are official public desks. Their
+        # hotline is part of the desk contact information, so it remains
+        # available to authenticated users even when the resident privacy
+        # toggle is left at its default value.
+        is_official_desk = instance.account_type in ['Barangay', 'Admin']
+        if getattr(instance, 'show_contact_number', False) or is_official_desk:
             data['contact_number'] = instance.contact_number
             data['show_contact_number'] = True
         else:
@@ -702,25 +747,6 @@ class PublicProfileSerializer(serializers.ModelSerializer):
         return get_signed_cloudinary_url(obj.profile_link, as_avatar=True)
 
     def get_resume_url(self, obj):
-        if not obj.resume_url or obj.account_type != 'Kasambahay':
-            return None
-        import cloudinary.utils
-        try:
-            if obj.resume_url.endswith('.pdf'):
-                temporary_url, _ = cloudinary.utils.cloudinary_url(
-                    obj.resume_url,
-                    resource_type="raw",
-                    type="authenticated",
-                    sign_url=True,
-                )
-            else:
-                temporary_url, _ = cloudinary.utils.cloudinary_url(
-                    obj.resume_url,
-                    resource_type="image",
-                    format="pdf",
-                    type="authenticated",
-                    sign_url=True,
-                )
-            return temporary_url
-        except Exception:
-            return None
+        # Shared profiles use the authenticated, privacy-filtered generated CV endpoint.
+        # Old uploaded files may contain details the worker no longer wants to share.
+        return None

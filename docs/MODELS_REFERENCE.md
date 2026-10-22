@@ -4,6 +4,76 @@ This document outlines the database schema, models, field types, and choices (en
 
 ## Accounts App
 
+### `PenaltyAdjustment`
+- **Database Table:** `tbl_penalty_adjustment`
+
+| Field Name | Data Type | Constraints / Choices / FK |
+| --- | --- | --- |
+| `id` | `UUIDField` | Primary Key, Unique |
+| `request_id` | `UUIDField` | Unique |
+| `user_id_snapshot` | `UUIDField` | - |
+| `user_name` | `CharField` | - |
+| `user_role` | `CharField` | - |
+| `user_barangay` | `CharField` | Blank=True |
+| `barangay_key` | `CharField` | Blank=True |
+| `city_key` | `CharField` | Blank=True |
+| `province_key` | `CharField` | Blank=True |
+| `admin_id_snapshot` | `UUIDField` | - |
+| `admin_name` | `CharField` | - |
+| `admin_role` | `CharField` | - |
+| `points_delta` | `SmallIntegerField` | - |
+| `points_before` | `PositiveSmallIntegerField` | - |
+| `points_after` | `PositiveSmallIntegerField` | - |
+| `penalty_month` | `DateField` | - |
+| `reason` | `TextField` | - |
+| `report_verified` | `BooleanField` | - |
+| `incident_reference` | `CharField` | Blank=True |
+| `booking_id_snapshot` | `UUIDField` | Null=True, Blank=True |
+| `created_at` | `DateTimeField` | Blank=True |
+
+### `tbl_worker_status_history`
+- **Database Table:** `tbl_worker_status_history`
+
+| Field Name | Data Type | Constraints / Choices / FK |
+| --- | --- | --- |
+| `id` | `UUIDField` | Primary Key, Unique |
+| `worker` | `ForeignKey` | Null=True, FK -> `tbl_user_profile` |
+| `worker_id_snapshot` | `UUIDField` | - |
+| `status` | `BooleanField` | - |
+| `barangay` | `CharField` | Blank=True |
+| `changed_at` | `DateTimeField` | Blank=True |
+| `is_verified` | `BooleanField` | - |
+| `clearance_valid_until` | `DateField` | Null=True, Blank=True |
+
+### `tbl_worker_profile`
+- **Database Table:** `tbl_worker_profile`
+
+| Field Name | Data Type | Constraints / Choices / FK |
+| --- | --- | --- |
+| `id` | `BigAutoField` | Primary Key, Unique, Blank=True |
+| `user` | `OneToOneField` | Unique, FK -> `tbl_user_profile` |
+| `service_categories` | `JSONField` | Blank=True |
+| `work_setup` | `CharField` | Blank=True, Choices: ['stay_in', 'stay_out', 'either'] |
+| `engagement_preference` | `CharField` | Blank=True, Choices: ['short_term', 'long_term', 'both'] |
+| `desired_monthly_rate` | `DecimalField` | Null=True, Blank=True |
+| `desired_daily_rate` | `DecimalField` | Null=True, Blank=True |
+| `civil_status` | `CharField` | Blank=True, Choices: ['Single', 'Married', 'Widowed', 'Separated'] |
+| `number_of_children` | `PositiveSmallIntegerField` | Null=True, Blank=True |
+| `experience_level` | `CharField` | Blank=True, Choices: ['new', 'household', 'paid'] |
+| `experience_duration` | `CharField` | Blank=True, Choices: ['under_1', '1_to_3', 'over_3'] |
+| `experience_summary` | `CharField` | Blank=True |
+| `practical_skills` | `JSONField` | Blank=True |
+| `available_from` | `DateField` | Null=True, Blank=True |
+| `available_days` | `JSONField` | Blank=True |
+| `preferred_shifts` | `JSONField` | Blank=True |
+| `preferred_work_areas` | `JSONField` | Blank=True |
+| `education` | `CharField` | Blank=True |
+| `training` | `JSONField` | Blank=True |
+| `references_available` | `BooleanField` | - |
+| `share_family_details` | `BooleanField` | - |
+| `share_contact_details` | `BooleanField` | - |
+| `updated_at` | `DateTimeField` | Blank=True |
+
 ### `tbl_user_profile`
 - **Database Table:** `accounts_tbl_user_profile`
 
@@ -20,8 +90,6 @@ This document outlines the database schema, models, field types, and choices (en
 | `middle_name` | `CharField` | Null=True, Blank=True |
 | `last_name` | `CharField` | - |
 | `is_active` | `BooleanField` | - |
-| `cancellation_strikes` | `PositiveIntegerField` | - |
-| `is_restricted` | `BooleanField` | - |
 | `is_staff` | `BooleanField` | - |
 | `date_of_birth` | `DateField` | Null=True, Blank=True |
 | `religion` | `CharField` | Null=True, Blank=True |
@@ -42,6 +110,12 @@ This document outlines the database schema, models, field types, and choices (en
 | `contact_number` | `CharField` | Unique |
 | `show_contact_number` | `BooleanField` | - |
 | `is_on_job` | `BooleanField` | - |
+| `chat_suspended_until` | `DateTimeField` | Null=True, Blank=True |
+| `is_account_suspended` | `BooleanField` | - |
+| `suspended_by` | `ForeignKey` | Null=True, Blank=True, FK -> `tbl_user_profile` |
+| `penalty_points` | `IntegerField` | - |
+| `penalty_month` | `DateField` | - |
+| `is_restricted` | `BooleanField` | - |
 | `user_about` | `TextField` | Blank=True |
 | `user_tags` | `JSONField` | Blank=True |
 | `social_links` | `JSONField` | Blank=True |
@@ -112,6 +186,13 @@ This document outlines the database schema, models, field types, and choices (en
 | `booking_id` | `UUIDField` | Primary Key, Unique |
 | `poster_id` | `ForeignKey` | FK -> `tbl_user_profile` |
 | `booking_type` | `CharField` | Choices: ['short_term', 'long_term'] |
+| `work_setup` | `CharField` | Null=True, Blank=True, Choices: ['stay_in', 'stay_out'] |
+| `recipient_id` | `ForeignKey` | Null=True, Blank=True, FK -> `tbl_user_profile` |
+| `offer_request_key` | `UUIDField` | Null=True, Blank=True |
+| `offer_payload_hash` | `CharField` | Blank=True |
+| `work_days` | `ArrayField` | Blank=True |
+| `daily_start_time` | `TimeField` | Null=True, Blank=True |
+| `daily_end_time` | `TimeField` | Null=True, Blank=True |
 | `booking_status` | `CharField` | Choices: ['Pending', 'Accepted', 'InProgress', 'Completed', 'Cancelled'] |
 | `service_category` | `ArrayField` | - |
 | `start_time` | `DateTimeField` | - |
@@ -124,11 +205,15 @@ This document outlines the database schema, models, field types, and choices (en
 | `floor_number` | `CharField` | Null=True, Blank=True |
 | `zip_code` | `CharField` | Null=True, Blank=True |
 | `special_instruction` | `TextField` | Null=True, Blank=True |
-| `daily_rate` | `DecimalField` | - |
-| `cancelled_by` | `ForeignKey` | Null=True, Blank=True, FK -> `tbl_user_profile` |
-| `cancel_requested_by` | `ForeignKey` | Null=True, Blank=True, FK -> `tbl_user_profile` |
-| `cancel_requested_at` | `DateTimeField` | Null=True, Blank=True |
+| `rate_amount` | `DecimalField` | - |
+| `rate_period` | `CharField` | Choices: ['day', 'month'] |
+| `rate_needs_review` | `BooleanField` | - |
+| `started_at` | `DateTimeField` | Null=True, Blank=True |
+| `completed_at` | `DateTimeField` | Null=True, Blank=True |
 | `cancellation_reason` | `CharField` | Null=True, Blank=True |
+| `cancelled_by` | `ForeignKey` | Null=True, Blank=True, FK -> `tbl_user_profile` |
+| `cancelled_at` | `DateTimeField` | Null=True, Blank=True |
+| `cancellation_penalty_points` | `PositiveSmallIntegerField` | - |
 | `createdAt` | `DateTimeField` | Blank=True |
 
 ### `tbl_booking_assignment`
@@ -154,6 +239,16 @@ This document outlines the database schema, models, field types, and choices (en
 | `status` | `CharField` | Choices: ['Pending', 'Accepted', 'Rejected', 'Withdrawn'] |
 | `createdAt` | `DateTimeField` | Blank=True |
 
+### `tbl_saved_post`
+- **Database Table:** `tbl_saved_post`
+
+| Field Name | Data Type | Constraints / Choices / FK |
+| --- | --- | --- |
+| `saved_id` | `UUIDField` | Primary Key, Unique |
+| `user` | `ForeignKey` | FK -> `tbl_user_profile` |
+| `booking` | `ForeignKey` | FK -> `tbl_booking` |
+| `created_at` | `DateTimeField` | Blank=True |
+
 ## Reviews App
 
 ### `tbl_review`
@@ -167,6 +262,8 @@ This document outlines the database schema, models, field types, and choices (en
 | `reviewee_id` | `ForeignKey` | FK -> `tbl_user_profile` |
 | `unstructured_feedback` | `TextField` | - |
 | `nlp_sentiment` | `CharField` | Choices: ['Positive', 'Neutral', 'Negative'] |
+| `sentiment_analysis` | `JSONField` | Blank=True |
+| `submission_key` | `UUIDField` | Null=True, Blank=True |
 | `rating` | `IntegerField` | - |
 | `createdAt` | `DateTimeField` | Blank=True |
 
@@ -186,6 +283,29 @@ This document outlines the database schema, models, field types, and choices (en
 
 ## Chat App
 
+### `AccountAccessAudit`
+- **Database Table:** `tbl_account_access_audit`
+
+| Field Name | Data Type | Constraints / Choices / FK |
+| --- | --- | --- |
+| `log_id` | `UUIDField` | Primary Key, Unique |
+| `actor_id_snapshot` | `UUIDField` | - |
+| `actor_name` | `CharField` | - |
+| `actor_role` | `CharField` | - |
+| `actor_barangay` | `CharField` | Blank=True |
+| `target_id_snapshot` | `UUIDField` | - |
+| `target_name` | `CharField` | - |
+| `target_role` | `CharField` | - |
+| `target_barangay` | `CharField` | Blank=True |
+| `target_is_staff` | `BooleanField` | - |
+| `barangay_key` | `CharField` | Blank=True |
+| `city_key` | `CharField` | Blank=True |
+| `province_key` | `CharField` | Blank=True |
+| `action` | `CharField` | Choices: ['pause_chat', 'resume_chat', 'suspend_account', 'restore_account'] |
+| `previous_state` | `JSONField` | - |
+| `new_state` | `JSONField` | - |
+| `created_at` | `DateTimeField` | Blank=True |
+
 ### `tbl_chat_message`
 - **Database Table:** `tbl_chat_message`
 
@@ -195,11 +315,15 @@ This document outlines the database schema, models, field types, and choices (en
 | `sender_id` | `ForeignKey` | FK -> `tbl_user_profile` |
 | `receiver_id` | `ForeignKey` | FK -> `tbl_user_profile` |
 | `booking_id` | `ForeignKey` | Null=True, Blank=True, FK -> `tbl_booking` |
+| `is_booking_offer` | `BooleanField` | - |
+| `booking_proposal` | `ForeignKey` | Null=True, Blank=True, FK -> `tbl_booking_proposal` |
 | `message_type` | `CharField` | Choices: ['text', 'image'] |
 | `image_public_id` | `CharField` | Null=True, Blank=True |
 | `message_payload` | `EncryptedTextField` | Null=True, Blank=True |
 | `is_read` | `BooleanField` | - |
 | `is_deleted` | `BooleanField` | - |
+| `hidden_by_sender` | `BooleanField` | - |
+| `hidden_by_receiver` | `BooleanField` | - |
 | `createdAt` | `DateTimeField` | Blank=True |
 
 ### `tbl_chat_reaction`

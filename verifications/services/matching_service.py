@@ -35,11 +35,11 @@ def calculate_similarity(s1: str | None, s2: str | None) -> float:
     return SequenceMatcher(None, norm1, norm2).ratio()
 
 
-def detect_discrepancies(extracted_data: dict, user_profile) -> tuple[float, list[dict]]:
+def detect_discrepancies(extracted_data: dict, user_profile) -> tuple[float | None, list[dict]]:
     """
     Compare extracted document data against user_profile.
     Returns:
-        (ocr_match_score: float, discrepancies: list[dict])
+        (ocr_match_score: percentage from 0 to 100, or None if no comparable fields, discrepancies)
     """
     discrepancies: list[dict] = []
     field_scores: list[float] = []
@@ -162,10 +162,10 @@ def detect_discrepancies(extracted_data: dict, user_profile) -> tuple[float, lis
         except ValueError:
             pass
 
-    # Calculate overall match score (0.0 to 1.0)
+    # Canonical persisted score: percentage 0..100. Missing evidence is not 50%.
     if field_scores:
         avg_score = sum(field_scores) / len(field_scores)
     else:
-        avg_score = 0.5 if extracted_data else 0.0
+        return None, discrepancies
 
-    return round(avg_score, 2), discrepancies
+    return round(avg_score * 100, 2), discrepancies

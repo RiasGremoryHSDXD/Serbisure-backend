@@ -1,16 +1,12 @@
-"""
-ASGI config for Serbisure project.
-
-It exposes the ASGI callable as a module-level variable named ``application``.
-
-For more information on this file, see
-https://docs.djangoproject.com/en/6.0/howto/deployment/asgi/
-"""
-
+"""HTTP API and authenticated personal WebSocket streams share the same ASGI server."""
 import os
-
 from django.core.asgi import get_asgi_application
-
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'Serbisure.settings')
-
-application = get_asgi_application()
+django_application = get_asgi_application()
+from channels.routing import ProtocolTypeRouter, URLRouter
+from django.urls import path
+from realtime.consumers import UserEventsConsumer
+application = ProtocolTypeRouter({
+    'http': django_application,
+    'websocket': URLRouter([path('ws/events/', UserEventsConsumer.as_asgi())]),
+})

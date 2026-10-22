@@ -1,0 +1,21 @@
+[Unit]
+Description=SerbiSure Django backend
+Wants=network-online.target redis-server.service
+After=network-online.target redis-server.service
+
+[Service]
+User=serbisure
+Group=serbisure
+WorkingDirectory=/opt/serbisure-deploy/current
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=DJANGO_DEBUG=false
+ExecStart=/opt/serbisure-deploy/current/.venv/bin/python -m uvicorn Serbisure.asgi:application --host 127.0.0.1 --port 8000 --workers 1 --proxy-headers --ws-max-size 4096 --ws-ping-interval 25 --ws-ping-timeout 25
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+UMask=0022
+
+[Install]
+WantedBy=multi-user.target

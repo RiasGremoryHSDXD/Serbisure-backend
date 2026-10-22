@@ -2,12 +2,11 @@ from rest_framework import serializers
 from .models import tbl_review
 from booking.models import tbl_booking, tbl_booking_assignment
 from core.utils import get_signed_cloudinary_url
-from .sentiment_service import predict_sentiment_hf
 
 
 class CreateReviewSerializer(serializers.ModelSerializer):
     rating = serializers.IntegerField(min_value=1, max_value=5)
-    nlp_sentiment = serializers.ChoiceField(choices=tbl_review.NLP_TYPE_CHOICES, required=False)
+    nlp_sentiment = serializers.CharField(read_only=True)
     # min_length=10 prevents meaningless 1-character submissions
     unstructured_feedback = serializers.CharField(min_length=10, max_length=1000, allow_blank=False)
 
@@ -68,10 +67,6 @@ class CreateReviewSerializer(serializers.ModelSerializer):
         data['reviewer_id'] = user
         data['reviewee_id'] = reviewee
 
-        # Auto-infer sentiment via Hugging Face Space if not supplied
-        if not data.get('nlp_sentiment'):
-            data['nlp_sentiment'] = predict_sentiment_hf(data.get('unstructured_feedback', ''))
-
         return data
 
     def create(self, validated_data):
@@ -106,6 +101,7 @@ class ReviewSerializer(serializers.ModelSerializer):
             'rating',
             'unstructured_feedback',
             'nlp_sentiment',
+            'sentiment_analysis',
             'createdAt'
         ]
 

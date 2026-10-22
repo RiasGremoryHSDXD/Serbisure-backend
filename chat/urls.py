@@ -1,16 +1,13 @@
 from django.urls import path
-from .views import (
-    SendMessageView,
-    SendImageMessageView,
-    ReactMessageView,
-    ChatMessageView,
-    ChatInboxView,
-    MarkMessageReadView,
-    DeleteChatMessageView,
-    ChatTypingView,
-)
+from .views import (SendMessageView, SendImageMessageView, ReactMessageView, ChatMessageView,
+                    ChatInboxView, MarkMessageReadView, DeleteChatMessageView, ChatTypingView, SupportContactsView)
+from .moderation_api import AccessHistoryView, MySafetyView, UserSuspensionView
 
 urlpatterns = [
+    path('safety/history/', AccessHistoryView.as_view(), name='account-access-history'),
+    path('safety/status/', MySafetyView.as_view(), name='chat-safety-status'),
+    path('safety/users/<uuid:user_id>/', UserSuspensionView.as_view(), name='chat-user-suspension'),
+    path('support-contacts/', SupportContactsView.as_view(), name='chat-support-contacts'),
     # POST   /api/v1/chat/send/                          → Send a new text message
     path('send/', SendMessageView.as_view(), name='chat-send'),
 

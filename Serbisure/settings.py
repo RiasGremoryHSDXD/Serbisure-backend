@@ -24,6 +24,13 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 load_dotenv(BASE_DIR / '.env')
 
+# Private inference credentials: never expose these through the Expo frontend.
+HUGGINGFACE_API_TOKEN = os.environ.get('HUGGINGFACE_API_TOKEN') or os.environ.get('HF_TOKEN', '')
+HUGGINGFACE_SENTIMENT_SPACE_URL = os.environ.get('HUGGINGFACE_SENTIMENT_SPACE_URL', 'https://riasgremory2-serbisure-sentiment-api.hf.space')
+HUGGINGFACE_SENTIMENT_MODEL_ID = 'Rhoii/cebuano-taglish-sentiment'
+HUGGINGFACE_SENTIMENT_TIMEOUT_SECONDS = 30
+
+
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/6.0/howto/deployment/checklist/
 
@@ -31,7 +38,7 @@ load_dotenv(BASE_DIR / '.env')
 SECRET_KEY = os.environ.get('SECRET_KEY')
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = os.environ.get('DJANGO_DEBUG', 'true').lower() == 'true'
 
 ALLOWED_HOSTS = ['*'] # Allow Vercel domains
 
@@ -39,6 +46,9 @@ ALLOWED_HOSTS = ['*'] # Allow Vercel domains
 # Application definition
 
 INSTALLED_APPS = [
+    'daphne',
+    'channels',
+    'realtime',
     # 1. DJANGO CORE APPS
     'django.contrib.admin',
     'django.contrib.auth',
@@ -54,7 +64,6 @@ INSTALLED_APPS = [
     'drf_spectacular',
     
     # 3. YOUR CUSTOM APPS
-    'testing_database',
     'accounts',
     'core',
     'verifications',
@@ -95,6 +104,19 @@ TEMPLATES = [
 ]
 
 WSGI_APPLICATION = 'Serbisure.wsgi.application'
+ASGI_APPLICATION = 'Serbisure.asgi.application'
+REALTIME_ALLOWED_ORIGINS = [origin.strip().rstrip('/') for origin in os.environ.get(
+    'REALTIME_ALLOWED_ORIGINS', 'http://localhost:3000,http://127.0.0.1:3000,http://localhost:5173,http://127.0.0.1:5173'
+).split(',') if origin.strip()]
+REDIS_URL = os.environ.get('REDIS_URL')
+if os.environ.get('RENDER') and not REDIS_URL:
+    from django.core.exceptions import ImproperlyConfigured
+    raise ImproperlyConfigured('Render WebSockets require the internal REDIS_URL for the channel layer.')
+CHANNEL_LAYERS = {'default': {
+    'BACKEND': 'channels_redis.core.RedisChannelLayer',
+    'CONFIG': {'hosts': [REDIS_URL], 'capacity': 1000, 'expiry': 60},
+}} if REDIS_URL else {'default': {'BACKEND': 'channels.layers.InMemoryChannelLayer'}}
+
 
 
 # Database
@@ -103,7 +125,7 @@ WSGI_APPLICATION = 'Serbisure.wsgi.application'
 DATABASES = {
     'default': dj_database_url.config(
         default=os.environ.get('DATABASE_URL'),
-        conn_max_age=600,
+        conn_max_age=0,
         conn_health_checks=True,
     )
 }
@@ -152,7 +174,7 @@ AUTH_USER_MODEL = 'accounts.tbl_user_profile'
 # Django REST Framework Settings 
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES' : (
-        'rest_framework_simplejwt.authentication.JWTAuthentication',
+        'accounts.authentication.AccountJWTAuthentication',
     ),
     'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
     'DEFAULT_THROTTLE_RATES': {
@@ -164,6 +186,7 @@ REST_FRAMEWORK = {
         'chat_messages': '120/m',
         'chat_inbox': '60/m',
         'chat_read': '60/m',
+        'chat_typing': '60/m',
         'chat_image_upload': '20/h',
         'chat_react': '120/h',
         # Accounts

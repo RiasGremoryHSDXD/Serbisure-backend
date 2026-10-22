@@ -1,4 +1,4 @@
-from django.db import models
+from django.db import models, transaction
 from django.conf import settings
 from django.db.models import CheckConstraint, Q
 import uuid 
@@ -6,6 +6,12 @@ import uuid
 # Create your models here.
 
 class tbl_documents(models.Model):
+
+    def save(self, *args, **kwargs):
+        with transaction.atomic(using=kwargs.get('using') or 'default'):
+            super().save(*args, **kwargs)
+            from accounts.workforce import record_worker_status
+            record_worker_status(self.user_profile_id, using=self._state.db)
 
 
     DOCUMENT_CHOICES = (
@@ -88,7 +94,7 @@ class tbl_documents(models.Model):
     ocr_match_score = models.FloatField(
         blank=True,
         null=True,
-        help_text="0.0-1.0 score indicating how well OCR data matches profile"
+        help_text="Document text matching percentage (0-100); null when evidence is unavailable"
     )
 
     ocr_discrepancies = models.JSONField(

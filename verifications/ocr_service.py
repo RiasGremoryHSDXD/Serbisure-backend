@@ -92,7 +92,7 @@ def _call_groq_ai_verification(raw_text: str, document_type: str, user_profile) 
     user_first = getattr(user_profile, 'first_name', '') or ''
     user_last = getattr(user_profile, 'last_name', '') or ''
     user_full_name = f"{user_first} {user_last}".strip()
-    user_barangay = getattr(user_profile, 'barangay', '') or getattr(user_profile, 'city', '') or getattr(user_profile, 'street', '') or 'Pagatpat'
+    user_barangay = getattr(user_profile, 'barangay', '') or getattr(user_profile, 'city', '') or getattr(user_profile, 'street', '') or ''
 
     system_prompt = (
         "You are an expert AI document verification specialist for SerbiSure (a domestic labor compliance platform in the Philippines). "
@@ -169,7 +169,7 @@ def parse_extracted_document(raw_text: str, document_type: str, user_profile) ->
     user_first = getattr(user_profile, 'first_name', '') or ''
     user_last = getattr(user_profile, 'last_name', '') or ''
     user_full_name = f"{user_first} {user_last}".strip()
-    user_barangay = getattr(user_profile, 'barangay', '') or getattr(user_profile, 'street', '') or getattr(user_profile, 'city', '') or 'Pagatpat'
+    user_barangay = getattr(user_profile, 'barangay', '') or getattr(user_profile, 'street', '') or getattr(user_profile, 'city', '') or ''
     
     # 1. Try Groq AI Verification first if text is available
     if raw_text:
@@ -178,19 +178,16 @@ def parse_extracted_document(raw_text: str, document_type: str, user_profile) ->
             doc_num = (
                 groq_ai_result.get('clearance_number') or
                 groq_ai_result.get('philsys_number') or
-                groq_ai_result.get('document_number') or
-                f"DOC-{str(abs(hash(raw_text)))[:8]}"
+                groq_ai_result.get('document_number') or None
             )
-            match_score = float(groq_ai_result.get('match_score', 95.0))
-            # Bound match score between 10.0 and 99.8
-            match_score = max(min(match_score, 99.8), 10.0)
-            
+            from .services.matching_service import detect_discrepancies
+            match_score, discrepancies = detect_discrepancies(groq_ai_result, user_profile)
             return {
                 "document_number": doc_num,
                 "raw_text": raw_text,
                 "extracted_data": groq_ai_result,
                 "match_score": match_score,
-                "discrepancies": groq_ai_result.get('discrepancies', []),
+                "discrepancies": discrepancies,
                 "date_issued": groq_ai_result.get('date_issued'),
                 "valid_until": groq_ai_result.get('valid_until')
             }
@@ -201,8 +198,8 @@ def parse_extracted_document(raw_text: str, document_type: str, user_profile) ->
         "document_number": None,
         "date_issued": None,
         "valid_until": None,
-        "barangay": user_barangay,
-        "city": getattr(user_profile, 'city', None) or 'Cagayan de Oro City',
+        "barangay": None,
+        "city": None,
         "document_type_label": document_type.replace('_', ' ').title()
     }
     discrepancies = []
@@ -213,7 +210,7 @@ def parse_extracted_document(raw_text: str, document_type: str, user_profile) ->
             "document_number": None,
             "raw_text": "",
             "extracted_data": extracted_data,
-            "match_score": 0.0,
+            "match_score": None,
             "discrepancies": [{
                 "field": "image_quality",
                 "severity": "high",
@@ -244,7 +241,7 @@ def parse_extracted_document(raw_text: str, document_type: str, user_profile) ->
             doc_number = gen_match.group(0)
         else:
             num_match = re.search(r'\b\d{6,10}\b', raw_text)
-            doc_number = num_match.group(0) if num_match else "DOC-" + str(abs(hash(raw_text)))[:8]
+            doc_number = num_match.group(0) if num_match else None
 
     extracted_data["document_number"] = doc_number
 
@@ -262,7 +259,7 @@ def parse_extracted_document(raw_text: str, document_type: str, user_profile) ->
 
     if first_name_match and last_name_match:
         name_score = max(name_similarity * 100, 95.0)
-        extracted_data["full_name"] = user_full_name
+        extracted_data["full_name"] = max(lines, key=lambda line: _similarity(line, user_full_name), default=None)
     else:
         name_score = name_similarity * 100
         discrepancies.append({
@@ -297,8 +294,9 @@ def parse_extracted_document(raw_text: str, document_type: str, user_profile) ->
             "message": f"Barangay '{user_barangay}' not explicitly detected in OCR text."
         })
 
-    total_score = round((name_score * 0.7) + (barangay_score * 0.3), 1)
-    total_score = max(min(total_score, 99.8), 20.0)
+    from .services.matching_service import detect_discrepancies
+    total_score, match_discrepancies = detect_discrepancies(extracted_data, user_profile)
+    discrepancies.extend(match_discrepancies)
 
     return {
         "document_number": doc_number,
