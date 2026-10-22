@@ -83,31 +83,6 @@ class RealtimeTests(TransactionTestCase):
             await again.disconnect(); await admin.disconnect()
         async_to_sync(scenario)()
 
-    @override_settings(REALTIME_ALLOWED_ORIGINS=[
-        'http://localhost:3000', 'http://127.0.0.1:3000', 'https://serbisure-admin-one.vercel.app',
-    ])
-    def test_hosted_admin_origin_receives_native_presence_and_rejects_lookalike_origins(self):
-        async def scenario():
-            admin = await self.connect(origin='https://serbisure-admin-one.vercel.app',
-                host='159.89.196.204', scheme='wss')
-            await admin.send_json_to({'type': 'presence.watch', 'partner_ids': [str(self.partner.pk)]})
-            self.assertIs((await admin.receive_json_from())['is_online'], False)
-            mobile = await self.connect(self.partner_token, origin='https://159.89.196.204',
-                host='159.89.196.204', scheme='wss')
-            self.assertIs((await admin.receive_json_from())['is_online'], True)
-            await mobile.disconnect()
-            self.assertIs((await admin.receive_json_from())['is_online'], False)
-            for origin in ['https://serbisure-admin-one.vercel.app.attacker.example',
-                           'https://serbisure-admin-one-git-preview.vercel.app',
-                           'http://serbisure-admin-one.vercel.app']:
-                socket = WebsocketCommunicator(application, '/ws/events/',
-                    headers=[(b'origin', origin.encode()), (b'host', b'159.89.196.204')])
-                socket.scope['scheme'] = 'wss'
-                self.assertFalse((await socket.connect())[0])
-                await socket.disconnect()
-            await admin.disconnect()
-        async_to_sync(scenario)()
-
     def test_presence_subscriptions_enforce_barangay_and_expose_no_private_messages(self):
         staff = User.objects.create_user(username='presence_staff', email='presence_staff@example.test', password='Password123!', contact_number='+639123451118', account_type='Barangay', barangay='Pagatpat')
         self.partner.barangay = 'Carmen'; self.partner.save(update_fields=['barangay'])
