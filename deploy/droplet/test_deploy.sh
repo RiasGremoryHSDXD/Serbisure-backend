@@ -20,6 +20,14 @@ printf 'Deployment test fixtures: %s\n' "$TEST_ROOT"
 
 assert() { if ! "$@"; then printf 'FAIL: %s\n' "$*" >&2; exit 1; fi; }
 
+# A workflow's merge SHA belongs to its own repository, not necessarily its fork.
+workflow="$SOURCE/../../.github/workflows/deploy_droplet.yml"
+assert grep -Fq 'VALIDATION_REPOSITORY: ${{ github.repository }}' "$workflow"
+assert grep -Fq 'VALIDATION_SERVER_URL: ${{ github.server_url }}' "$workflow"
+assert grep -Fq '"$VALIDATION_SERVER_URL/$VALIDATION_REPOSITORY.git" "$VALIDATION_SHA"' "$workflow"
+assert grep -Fq "github.repository == 'SerbiSure-Tagupa-et-al/Serbisure-backend'" "$workflow"
+printf 'PASS: validation follows the event repository; production is organization-only\n'
+
 run_case() {
     local name=$1 expected=$2 mode=${3:-ok} requested=${4:-$SHA}
     local case_dir="$TEST_ROOT/$name"
@@ -48,7 +56,9 @@ run_case() {
         git() {
             if [[ "$1" == init ]]; then mkdir -p "$3"; return; fi
             case "$2" in
-                fetch) printf 'fetch\n' >> "$TEST_LOG" ;;
+                fetch)
+                    [[ "$4" == https://github.com/SerbiSure-Tagupa-et-al/Serbisure-backend.git ]] || return 95
+                    printf 'fetch\n' >> "$TEST_LOG" ;;
                 rev-parse) if [[ "$TEST_MODE" == stale ]]; then
                     printf '%s\n' "$OTHER_SHA"
                 else printf '%s\n' "$SHA"; fi ;;

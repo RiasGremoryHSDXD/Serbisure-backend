@@ -5,7 +5,7 @@ umask 022
 
 DEPLOY_ROOT=${SERBISURE_DEPLOY_ROOT:-/opt/serbisure-deploy}
 ENV_FILE=${SERBISURE_ENV_FILE:-/etc/serbisure/backend.env}
-REPOSITORY=https://github.com/RiasGremoryHSDXD/Serbisure-backend.git
+REPOSITORY=https://github.com/SerbiSure-Tagupa-et-al/Serbisure-backend.git
 PUBLIC_URL=https://159.89.196.204/api/docs/
 SERVICE=serbisure.service
 switched=0

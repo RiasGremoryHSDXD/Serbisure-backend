@@ -1,7 +1,7 @@
 # DigitalOcean backend deployment
 
 This deploys **only the backend** from public repository
-`RiasGremoryHSDXD/Serbisure-backend`, branch `main`, to the existing Droplet
+`SerbiSure-Tagupa-et-al/Serbisure-backend`, branch `main`, to the existing Droplet
 `159.89.196.204`. It does not purchase resources, deploy either frontend, install
 Tesseract, replace certificates, or change Django application code.
 
@@ -13,7 +13,10 @@ Tesseract, replace certificates, or change Django application code.
   `DROPLET_DEPLOY_ENABLED` is set to the lowercase string `true`.
 - An isolated Ubuntu validation job runs on pull requests to main, pushes to main
   and manual runs. Deployment requires it to pass. It anonymously fetches the exact
-  public commit and receives no production secrets; no checkout/SSH action is used.
+  public commit **from the repository where that workflow is running**, using
+  `github.server_url` and `github.repository`, and receives no production secrets.
+  No checkout/SSH action is used. Production deployment is allowed only from the
+  organization repository named above, not from a personal fork.
 - A dedicated `serbisure-deploy` account builds a fresh release and Python venv.
   Django still runs as the existing unprivileged `serbisure` account.
 - The deployment SSH key can request only a full commit SHA. It cannot open a
@@ -83,9 +86,9 @@ Only after the files are merged into GitHub main, run these in the **Droplet roo
 terminal**. Fetch/archive does not update the existing live checkout:
 
 ```bash
-git -C /opt/serbisure-backend fetch origin main
+git -C /opt/serbisure-backend fetch --no-tags https://github.com/SerbiSure-Tagupa-et-al/Serbisure-backend.git main
 install -d -m 700 /root/serbisure-deploy-setup
-git -C /opt/serbisure-backend archive origin/main deploy/droplet | tar -x -C /root/serbisure-deploy-setup
+git -C /opt/serbisure-backend archive FETCH_HEAD deploy/droplet | tar -x -C /root/serbisure-deploy-setup
 bash /root/serbisure-deploy-setup/deploy/droplet/bootstrap.sh /root/serbisure-actions.pub
 ```
 
@@ -97,6 +100,12 @@ and briefly restarts Django. HTTPS certificates, HTTP challenge paths and proxy
 settings are preserved. On a setup health failure it attempts to restore the
 previous service/site configuration. Other newly created setup files/accounts
 remain for inspection; setup is not a full transaction.
+
+The original live checkout may still have your personal fork as `origin`. The
+commands above deliberately fetch the organization main explicitly without
+changing that checkout's files or remote configuration. New release deployments
+also fetch organization main directly, so a fork does not need to be synchronized
+for organization merges to deploy.
 
 Production environment handling:
 
