@@ -197,6 +197,20 @@ Deploying backend code does not change either frontend's API environment or
 rebuild an APK. Set the exact deployed portal origin in `REALTIME_ALLOWED_ORIGINS`
 when hosting the admin outside localhost, and restart Django.
 
+The production portal is `https://serbisure-admin-one.vercel.app`. Its exact
+origin is included in the backend default and `.env.example`. An existing
+server environment variable overrides that default, so set the following in
+`/etc/serbisure/backend.env` too if the variable is already configured:
+
+```dotenv
+REALTIME_ALLOWED_ORIGINS=http://localhost:3000,http://127.0.0.1:3000,https://serbisure-admin-one.vercel.app
+```
+
+Then run `sudo systemctl restart serbisure` and refresh the portal / reopen the
+mobile app. No APK rebuild is needed for this server-only origin change.
+Do not use wildcard origins or add arbitrary Vercel preview domains. Authentication
+and saved-profile presence permissions still apply after the handshake.
+
 ## When deployment stops
 
 - **Skipped job:** confirm the enable variable is exactly `true`, workflow files
