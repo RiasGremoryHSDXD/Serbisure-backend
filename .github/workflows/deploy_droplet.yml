@@ -19,13 +19,15 @@ jobs:
         shell: bash
         env:
           VALIDATION_SHA: ${{ github.sha }}
+          VALIDATION_REPOSITORY: ${{ github.repository }}
+          VALIDATION_SERVER_URL: ${{ github.server_url }}
         run: |
           set -euo pipefail
           [[ "$VALIDATION_SHA" =~ ^[0-9a-f]{40}$ ]]
           source_dir=$(mktemp -d "$RUNNER_TEMP/serbisure-deployment-check.XXXXXX")
           git -C "$source_dir" init
           git -C "$source_dir" fetch --depth=1 --no-tags \
-            https://github.com/RiasGremoryHSDXD/Serbisure-backend.git "$VALIDATION_SHA"
+            "$VALIDATION_SERVER_URL/$VALIDATION_REPOSITORY.git" "$VALIDATION_SHA"
           git -C "$source_dir" checkout --detach FETCH_HEAD
           [[ $(git -C "$source_dir" rev-parse HEAD) == "$VALIDATION_SHA" ]]
           bash "$source_dir/deploy/droplet/test_deploy.sh"
@@ -36,7 +38,7 @@ jobs:
       group: serbisure-droplet-production
       cancel-in-progress: false
     # Opt in only AFTER the one-time server and secret setup is complete.
-    if: github.ref == 'refs/heads/main' && vars.DROPLET_DEPLOY_ENABLED == 'true'
+    if: github.repository == 'SerbiSure-Tagupa-et-al/Serbisure-backend' && github.ref == 'refs/heads/main' && vars.DROPLET_DEPLOY_ENABLED == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
