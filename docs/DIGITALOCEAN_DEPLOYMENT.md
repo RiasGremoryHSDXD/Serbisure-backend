@@ -197,6 +197,24 @@ Deploying backend code does not change either frontend's API environment or
 rebuild an APK. Set the exact deployed portal origin in `REALTIME_ALLOWED_ORIGINS`
 when hosting the admin outside localhost, and restart Django.
 
+### Realtime deployment checks
+
+- Set `VITE_API_URL=https://159.89.196.204` in the admin Vercel project's
+  Production environment and redeploy it. Vite embeds this setting at build
+  time; updating the source default alone does not override an existing value.
+  The old Vercel backend returns 404 for `/ws/events/`, so REST chat may work
+  through polling while presence and live delivery fail.
+- Set `REALTIME_ALLOWED_ORIGINS` on the Droplet to include the exact admin
+  origin `https://serbisure-admin-one.vercel.app`.
+- The Redis channel layer explicitly uses a 15-second read timeout and a
+  5-second connection timeout. Keep the read timeout longer than Channels'
+  5-second blocking receive. Redis-py 8 defaults to a 5-second read timeout;
+  the resulting timeout can close otherwise healthy idle WebSockets. Avoid
+  overriding this with a shorter `socket_timeout` in the `REDIS_URL` query string.
+- If sockets repeatedly reconnect, inspect `journalctl -u serbisure` for
+  `redis.exceptions.TimeoutError` before changing the client heartbeat or
+  Nginx timeouts. A Redis `PING` response alone does not test blocking receives.
+
 ## When deployment stops
 
 - **Skipped job:** confirm the enable variable is exactly `true`, workflow files

@@ -114,7 +114,13 @@ if os.environ.get('RENDER') and not REDIS_URL:
     raise ImproperlyConfigured('Render WebSockets require the internal REDIS_URL for the channel layer.')
 CHANNEL_LAYERS = {'default': {
     'BACKEND': 'channels_redis.core.RedisChannelLayer',
-    'CONFIG': {'hosts': [REDIS_URL], 'capacity': 1000, 'expiry': 60},
+    # Channels blocks in BZPOPMIN for 5 seconds when a socket is idle. Redis-py
+    # 8 defaults to a 5-second read timeout, which can abort that normal wait
+    # and disconnect every WebSocket. Keep reads longer than the blocking poll.
+    'CONFIG': {
+        'hosts': [{'address': REDIS_URL, 'socket_timeout': 15, 'socket_connect_timeout': 5}],
+        'capacity': 1000, 'expiry': 60,
+    },
 }} if REDIS_URL else {'default': {'BACKEND': 'channels.layers.InMemoryChannelLayer'}}
 
 
