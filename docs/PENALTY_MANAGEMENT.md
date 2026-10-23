@@ -26,7 +26,7 @@ The adjustment transaction locks current official/resident profiles, rechecks ju
 
 ## Migration and audit storage
 
-The admin and mobile clients default to `https://159.89.196.204`. Local API URLs supplied with Windows CMD `set` are temporary overrides for that terminal and its child processes; they are not source changes or Git content. The admin's `.env.local` and any mobile `.env` overrides are ignored by Git. Do not hardcode a developer's LAN address for a PR.
+The staging admin and mobile clients target the Railway backend through `VITE_API_URL` and `EXPO_PUBLIC_API_URL`. Local API URLs supplied with Windows CMD `set` are temporary overrides for that terminal and its child processes; they are not source changes or Git content. The admin's `.env.local` and any mobile `.env` overrides are ignored by Git. Do not hardcode a developer's LAN address for a PR.
 
 To return to the hosted backend, stop Vite / Expo and clear the override in the **same CMD terminal** before restarting:
 

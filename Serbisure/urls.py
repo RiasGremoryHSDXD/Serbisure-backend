@@ -1,6 +1,7 @@
 from django.contrib import admin 
 from django.urls import path, include
 from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView
+from core.health import readiness
 
 """
 URL configuration for Serbisure project.
@@ -22,6 +23,7 @@ from django.contrib import admin
 from django.urls import path, include
 
 urlpatterns = [
+    path('api/health/', readiness, name='readiness'),
     path('admin/', admin.site.urls),
     path('api/v1/accounts/', include('accounts.urls')),
     path('api/v1/verifications/', include('verifications.urls')),
