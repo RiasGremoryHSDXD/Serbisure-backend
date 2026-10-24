@@ -18,6 +18,8 @@
 
 ---
 
+Staging deployment: [Railway setup and rollback](docs/RAILWAY_STAGING.md).
+
 > [!IMPORTANT]
 > This repository contains the **Backend RESTful API** for SerbiSure, an IT Capstone Research Project from the **University of Science and Technology of Southern Philippines (USTP)**. It is responsible for orchestrating secure data transactions, enforcing business logic, and maintaining the integrity of the bilateral verification gateway between Homeowners, Kasambahays, and Barangay LGUs.
 
