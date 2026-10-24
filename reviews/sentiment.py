@@ -48,6 +48,15 @@ def _prediction(payload, space_url):
             'source': 'huggingface', 'model': settings.HUGGINGFACE_SENTIMENT_MODEL_ID,
             'space_url': space_url, 'analyzed_at': timezone.now().isoformat()}
 
+def _log_sentiment_call(started, status, reason=""):
+    level = logging.INFO if status == "success" else logging.WARNING
+    logger.log(level, json.dumps({
+        "message": "sentiment_api",
+        "provider": "huggingface",
+        "status": status,
+        "duration_ms": round((time.monotonic() - started) * 1000, 2),
+        "reason": reason,
+    }))
 
 def analyze_feedback(text):
     text = text.strip()
@@ -65,7 +74,8 @@ def analyze_feedback(text):
     existing = cache.get(key)
     if existing:
         return existing
-    deadline = time.monotonic() + settings.HUGGINGFACE_SENTIMENT_TIMEOUT_SECONDS
+    started = time.monotonic()
+    deadline = started + settings.HUGGINGFACE_SENTIMENT_TIMEOUT_SECONDS
     headers = {'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'}
     try:
         with requests.Session() as session:
@@ -98,6 +108,7 @@ def analyze_feedback(text):
                             raise SentimentUnavailable('provider_error_event')
                         if event == 'complete':
                             result = _prediction(json.loads('\n'.join(data)), url)
+                            _log_sentiment_call(started, "success")
                             cache.set(key, result, timeout=300)
                             return result
                         event, data = '', []
@@ -109,12 +120,13 @@ def analyze_feedback(text):
                     raise SentimentUnavailable('provider_error_event')
                 if event == 'complete':
                     result = _prediction(json.loads('\n'.join(data)), url)
+                    _log_sentiment_call(started, "success")
                     cache.set(key, result, timeout=300)
                     return result
                 raise SentimentUnavailable('incomplete_stream')
     except SentimentUnavailable as error:
-        logger.warning('Review sentiment unavailable: %s', error.reason)
+        _log_sentiment_call(started, "failed", error.reason)
         raise
     except (requests.RequestException, ValueError, TypeError, AttributeError, UnicodeError):
-        logger.warning('Review sentiment unavailable: network or response error')
-        raise SentimentUnavailable('provider_unavailable') from None
+        _log_sentiment_call(started, "failed", "provider_unavailable")
+        raise SentimentUnavailable("provider_unavailable") from None
