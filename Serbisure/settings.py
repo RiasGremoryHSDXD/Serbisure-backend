@@ -226,3 +226,21 @@ SPECTACULAR_SETTINGS = {
     'VERSION': '1.0.0',
     'SERVE_INCLUDE_SCHEMA': False,
 }
+
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "handlers": {
+        "sentiment_console": {
+            "class": "logging.StreamHandler",
+            "stream": "ext://sys.stdout",
+        },
+    },
+    "loggers": {
+        "reviews.sentiment": {
+            "handlers": ["sentiment_console"],
+            "level": "INFO",
+            "propagate": False,
+        },
+    },
+}
