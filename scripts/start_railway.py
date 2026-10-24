@@ -1,4 +1,4 @@
-"""Start the isolated Railway staging backend without applying migrations."""
+"""Start Railway with the configured PostgreSQL database without applying migrations."""
 import os
 import subprocess
 import sys
@@ -7,17 +7,18 @@ from urllib.parse import unquote, urlsplit
 
 def validate_environment(env):
     database = urlsplit(env.get('DATABASE_URL', ''))
-    if database.scheme not in ('postgres', 'postgresql') or unquote(database.path.lstrip('/')) != 'staging-environment':
-        raise ValueError('Railway staging requires DATABASE_URL for staging-environment.')
+    # DATABASE_URL selects the database; do not hardcode a staging database name.
+    if database.scheme not in ('postgres', 'postgresql') or not unquote(database.path.lstrip('/')).strip():
+        raise ValueError('Set DATABASE_URL to a PostgreSQL URL with an explicit database name.')
     if not database.hostname or database.hostname in ('localhost', '127.0.0.1', '::1'):
-        raise ValueError('Railway staging requires its external Neon database.')
+        raise ValueError('Railway requires an external PostgreSQL database host.')
     redis = urlsplit(env.get('REDIS_URL', ''))
     if redis.scheme not in ('redis', 'rediss') or not redis.hostname or redis.hostname in ('localhost', '127.0.0.1', '::1'):
         raise ValueError('Set REDIS_URL to the Railway Redis service.')
     if not env.get('SECRET_KEY') or env.get('DJANGO_DEBUG', '').lower() != 'false':
         raise ValueError('Set SECRET_KEY and DJANGO_DEBUG=false in Railway Variables.')
     if not env.get('REALTIME_ALLOWED_ORIGINS', '').strip():
-        raise ValueError('Set REALTIME_ALLOWED_ORIGINS to the staging admin origin.')
+        raise ValueError('Set REALTIME_ALLOWED_ORIGINS to the allowed admin origin(s).')
     port = int(env.get('PORT', '8000'))
     if not 1 <= port <= 65535:
         raise ValueError('PORT must be between 1 and 65535.')

@@ -1,4 +1,4 @@
-"""Guard against accidentally routing the staging deployment to production."""
+"""Validate Railway startup configuration and dependency readiness."""
 from unittest.mock import MagicMock, patch
 
 from django.test import SimpleTestCase, override_settings
@@ -15,11 +15,24 @@ class RailwayEnvironmentTests(SimpleTestCase):
             'REALTIME_ALLOWED_ORIGINS': 'https://staging.example.test', 'PORT': '9000',
         }
 
-    def test_accepts_staging_database_and_injected_port(self):
-        self.assertEqual(validate_environment(self.env), 9000)
+    def test_accepts_configured_database_and_injected_port(self):
+        for scheme in ('postgres', 'postgresql'):
+            for name in ('staging-environment', 'serbisure-production-db', 'another-database'):
+                with self.subTest(scheme=scheme, database=name):
+                    self.assertEqual(validate_environment({
+                        **self.env,
+                        'DATABASE_URL': f'{scheme}://test:test@example.test/{name}?sslmode=require',
+                    }), 9000)
 
-    def test_rejects_production_or_missing_database(self):
-        for value in ('', 'postgresql://test:test@example.test/serbisure-production-db'):
+    def test_rejects_missing_database_invalid_scheme_and_local_host(self):
+        for value in ('', 'postgresql://test:test@example.test',
+                      'postgresql://test:test@example.test/',
+                      'postgresql://test:test@example.test/%20',
+                      'mysql://test:test@example.test/serbisure-production-db',
+                      'postgresql:///serbisure-production-db',
+                      'postgresql://test:test@localhost/serbisure-production-db',
+                      'postgresql://test:test@127.0.0.1/serbisure-production-db',
+                      'postgresql://test:test@[::1]/serbisure-production-db'):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 validate_environment({**self.env, 'DATABASE_URL': value})
 
